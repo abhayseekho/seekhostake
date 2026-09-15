@@ -29,6 +29,7 @@ const REASON_TEXT = {
 function Login({ authMode, onNamed }) {
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
+  const [showRules, setShowRules] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
   const [pw, setPw] = useState("");
   const submitName = async () => {
@@ -46,7 +47,9 @@ function Login({ authMode, onNamed }) {
       <div className="bg-card border border-edge rounded-2xl p-8 max-w-sm w-full text-center">
         <div className="text-5xl mb-3">🏊</div>
         <h1 className="text-2xl font-extrabold mb-1">Khuseel vs Bansod</h1>
-        <p className="text-dim mb-6">Live betting · best of 3 laps · 16 Sept</p>
+        <p className="text-dim mb-2">Live betting · best of 3 laps · 16 Sept</p>
+        <button onClick={() => setShowRules(true)} className="text-dim text-sm underline mb-6">📜 read the rules</button>
+        {showRules && <Rules onClose={() => setShowRules(false)} />}
         {authMode === "name" ? (
           <div className="space-y-3">
             <input
@@ -389,6 +392,68 @@ function Admin({ state, refresh }) {
   );
 }
 
+// ── rulebook ─────────────────────────────────────────────────────────────────────────────────────
+function Rules({ onClose }) {
+  const S = ({ n, title, children }) => (
+    <div className="mb-4">
+      <h3 className="font-bold mb-1">{n}. {title}</h3>
+      <div className="text-sm text-dim space-y-1">{children}</div>
+    </div>
+  );
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-start justify-center overflow-y-auto p-4"
+      onClick={onClose}>
+      <div className="bg-card border border-edge rounded-2xl p-6 max-w-lg w-full my-8"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-extrabold">📜 Rulebook</h2>
+          <button onClick={onClose} className="text-dim text-2xl leading-none">×</button>
+        </div>
+
+        <S n={1} title="The race">
+          <p>Khuseel vs Bansod, best of 3 laps of 25m each. First to win 2 laps wins the match —
+            if someone takes the first two, there is no lap 3. ~15-minute break between laps.</p>
+        </S>
+        <S n={2} title="How to bet — cash first">
+          <p>① Pay your stake in <b className="text-ink">cash to Abhay</b>. ② Submit the same bet
+            here (pick a swimmer, enter the amount). ③ Your bet shows as <b className="text-gold">pending</b> until
+            Abhay confirms the cash and approves it. Only approved bets are in the pool — no cash, no bet.</p>
+        </S>
+        <S n={3} title="One live bet per person">
+          <p>Your <b className="text-ink">latest approved bet</b> is your bet. Betting again replaces the
+            old one (e.g. a raise). Whole rupees only, minimum ₹1.</p>
+        </S>
+        <S n={4} title="When you can bet">
+          <p>Before the race and during <b className="text-ink">break 1</b> only.
+            Once lap 1 starts you <b className="text-ink">cannot switch sides</b> — raises on your own swimmer only.
+            The book <b className="text-ink">closes for good when lap 2 starts</b>. Pending requests not approved
+            by then are auto-rejected (cash returned).</p>
+        </S>
+        <S n={5} title="How payouts work (pool betting)">
+          <p>All stakes form one pool. If your swimmer <b className="text-ink">loses</b>, your stake is gone.
+            If your swimmer <b className="text-ink">wins</b>: you get your stake back <b className="text-ink">plus</b> a
+            share of 70% of the losing side's money, in proportion to your stake.</p>
+          <p>The remaining <b className="text-gold">30% of the losing pot goes to the winning swimmer</b> —
+            the man in the water gets paid too.</p>
+          <p>Payouts round down to the rupee; leftover paise go to the swimmer. Every rupee collected
+            is paid out — the organiser keeps nothing.</p>
+        </S>
+        <S n={6} title="Odds are live">
+          <p>The multiplier shown is <b className="text-ink">indicative</b> — it moves as money comes in and is
+            final only when the book closes. More money on your side = smaller multiplier.</p>
+        </S>
+        <S n={7} title="Disputes">
+          <p>This portal's record is final. Lap results are entered by the organiser at the pool.
+            Abhay is cashier and referee — his call stands.</p>
+        </S>
+        <button onClick={onClose} className="w-full bg-khuseel text-bg font-bold rounded-xl py-3 mt-2">
+          Got it
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── app shell ────────────────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [state, setState] = useState(null);
@@ -396,6 +461,7 @@ export default function App() {
   const [authMode, setAuthMode] = useState("oauth");
   const [picked, setPicked] = useState(null);
   const [settlement, setSettlement] = useState(null);
+  const [showRules, setShowRules] = useState(false);
 
   const refresh = useCallback(async () => {
     const r = await get("/api/state");
@@ -425,10 +491,12 @@ export default function App() {
       <header className="flex items-center justify-between">
         <h1 className="text-xl font-extrabold">🏊 Khuseel <span className="text-dim">vs</span> Bansod</h1>
         <div className="text-sm text-dim">
+          <button onClick={() => setShowRules(true)} className="underline mr-3">📜 rules</button>
           {state.me.name}{state.me.is_owner && <span className="text-gold"> · ADMIN</span>}
           <a href="/auth/logout" className="ml-3 underline">logout</a>
         </div>
       </header>
+      {showRules && <Rules onClose={() => setShowRules(false)} />}
 
       <RaceStrip race={state.race} />
       {settlement && <Settlement s={settlement} />}

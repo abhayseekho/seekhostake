@@ -4,4 +4,7 @@
 
 body {
   @apply bg-bg text-ink font-sans antialiased;
+  background: linear-gradient(180deg, #0a111a 0%, #0e1621 40%);
+  min-height: 100vh;
+  font-variant-numeric: tabular-nums;
 }

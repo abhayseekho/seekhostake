@@ -9,11 +9,11 @@ const inr = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
 
 const PHASE_LABEL = {
   prerace: "Pre-race — betting open",
-  lap1: "🔴 LAP 1 IN PROGRESS",
+  lap1: "🔴 Live — lap 1 in progress",
   break1: "Break 1 — betting open (last window)",
-  lap2: "🔴 LAP 2 IN PROGRESS — book closed",
+  lap2: "🔴 Live — lap 2 in progress · book closed",
   break2: "Break 2 — book closed, decider next",
-  lap3: "🔴 LAP 3 — DECIDER",
+  lap3: "🔴 Live — lap 3, the decider",
   finished: "Race finished — awaiting settlement",
   settled: "Settled",
 };
@@ -48,7 +48,7 @@ function Login({ authMode, onNamed }) {
         <div className="text-5xl mb-3">🏊</div>
         <h1 className="text-2xl font-extrabold mb-1">Khuseel vs Bansod</h1>
         <p className="text-dim mb-2">Live betting · best of 3 laps · 16 Sept</p>
-        <button onClick={() => setShowRules(true)} className="text-dim text-sm underline mb-6">📜 read the rules</button>
+        <button onClick={() => setShowRules(true)} className="text-dim text-sm underline mb-6">📜 Read the rules</button>
         {showRules && <Rules onClose={() => setShowRules(false)} />}
         {authMode === "name" ? (
           <div className="space-y-3">
@@ -69,7 +69,7 @@ function Login({ authMode, onNamed }) {
                 <button onClick={submitAdmin} className="bg-gold text-bg font-bold rounded-xl px-4">Go</button>
               </div>
             ) : (
-              <button onClick={() => setShowAdmin(true)} className="text-dim text-xs underline">admin login</button>
+              <button onClick={() => setShowAdmin(true)} className="text-dim text-xs underline">Admin login</button>
             )}
           </div>
         ) : (
@@ -128,7 +128,7 @@ function OddsBoard({ book, picked, onPick, bookOpen }) {
               {d.multiplier ? d.multiplier.toFixed(2) + "×" : "—"}
             </div>
             <div className="text-dim text-sm mt-1">
-              {d.implied_pct != null ? d.implied_pct + "% implied" : "no money yet"}
+              {d.implied_pct != null ? d.implied_pct + "% implied" : "No money yet"}
             </div>
             <div className="text-dim text-xs mt-2">{inr(d.total)} · {d.bettors} bettors</div>
           </button>
@@ -167,14 +167,14 @@ function BetSlip({ state, picked, refresh }) {
       {my_bet && (
         <div className="text-sm bg-bg rounded-xl px-3 py-2 border border-edge">
           Your bet: <b className={SIDE_TEXT[my_bet.side]}>{LABEL[my_bet.side]}</b> · {inr(my_bet.amount)}
-          <span className="text-dim"> (approved — a new approved bet replaces it)</span>
+          <span className="text-dim"> (approved — betting again replaces it)</span>
         </div>
       )}
       {my_pending && (
         <div className="text-sm bg-bg rounded-xl px-3 py-2 border border-gold flex justify-between items-center">
           <span>Pending: <b className={SIDE_TEXT[my_pending.side]}>{LABEL[my_pending.side]}</b> · {inr(my_pending.amount)}
             <span className="text-gold"> — pay cash to confirm</span></span>
-          <button onClick={cancel} className="text-bad text-xs underline">cancel</button>
+          <button onClick={cancel} className="text-bad text-xs underline">Cancel</button>
         </div>
       )}
       {blocked ? (
@@ -193,7 +193,7 @@ function BetSlip({ state, picked, refresh }) {
           {picked && amt > 0 && mult && (
             <p className="text-sm text-dim">
               Indicative payout if {LABEL[picked]} wins: <b className="text-ink">{inr(Math.floor(amt * (1 + 0.7 * (mult - 1))))}</b>
-              <span> (final depends on closing pool; 30% of profit pot goes to the winning swimmer)</span>
+              <span> (final payout depends on the closing pool; 30% of the profit pot goes to the winning swimmer)</span>
             </p>
           )}
           <button disabled={!picked || amt < 1} onClick={submit}
@@ -252,8 +252,8 @@ function Settlement({ s }) {
         🏆 <span className={SIDE_TEXT[s.winner]}>{LABEL[s.winner]}</span> wins — final settlement
       </h2>
       <p className="text-sm text-dim mb-3">
-        Pool {inr(s.pool)} · swimmer's cut <b className="text-gold">{inr(s.swimmer_take)}</b> ·
-        paid to bettors {inr(s.paid_to_bettors)} · sum check {inr(s.paid_to_bettors + s.swimmer_take)} ✓
+        Pool {inr(s.pool)} · Swimmer's cut <b className="text-gold">{inr(s.swimmer_take)}</b> ·
+        Paid to bettors {inr(s.paid_to_bettors)} · Sum check {inr(s.paid_to_bettors + s.swimmer_take)} ✓
       </p>
       <table className="w-full text-sm">
         <thead><tr className="text-dim text-left">
@@ -302,7 +302,7 @@ function Admin({ state, refresh }) {
 
   return (
     <div className="bg-card border-2 border-gold rounded-2xl p-4 space-y-4">
-      <h2 className="font-extrabold text-gold">Admin — cashier console</h2>
+      <h2 className="font-extrabold text-gold">Admin · Cashier console</h2>
 
       <div>
         <h3 className="font-bold text-sm mb-2">Pending requests ({pending.length})</h3>
@@ -311,8 +311,8 @@ function Admin({ state, refresh }) {
           <div key={p.id} className="flex items-center justify-between bg-bg border border-edge rounded-xl px-3 py-2 mb-2 text-sm">
             <div>
               <b>{p.display_name}</b> → <b className={SIDE_TEXT[p.side]}>{LABEL[p.side]}</b> {inr(p.amount)}
-              {p.current && <span className="text-dim"> (now: {LABEL[p.current.side]} {inr(p.current.amount)})</span>}
-              <div className="text-gold text-xs">collect {inr(p.cash_to_collect)} cash</div>
+              {p.current && <span className="text-dim"> (current: {LABEL[p.current.side]} {inr(p.current.amount)})</span>}
+              <div className="text-gold text-xs">Collect {inr(p.cash_to_collect)} cash</div>
             </div>
             <div className="flex gap-2">
               <button onClick={() => act(() => post(`/api/admin/bets/${p.id}/approve`))}
@@ -340,7 +340,7 @@ function Admin({ state, refresh }) {
                 <option value="">Lap winner…</option>
                 {SIDES.map((s) => <option key={s} value={s}>{LABEL[s]}</option>)}
               </select>
-              <input placeholder="time (s)" value={lapTime}
+              <input placeholder="Time (s)" value={lapTime}
                 onChange={(e) => setLapTime(e.target.value.replace(/[^\d.]/g, ""))}
                 className="bg-bg border border-edge rounded-xl px-3 py-2 w-24" />
               <button disabled={!lapWinner}
@@ -358,14 +358,14 @@ function Admin({ state, refresh }) {
           )}
           {book.pool === 0 && race.phase === "prerace" && (
             <button onClick={() => act(() => post("/api/admin/seed"))}
-              className="bg-edge rounded-xl px-4 py-2">Load WhatsApp book (seed)</button>
+              className="bg-edge rounded-xl px-4 py-2">Load the WhatsApp book</button>
           )}
         </div>
       </div>
 
       {race.phase !== "settled" && (
         <div>
-          <h3 className="font-bold text-sm mb-2">Manual bet (cash in hand) / void (amount 0)</h3>
+          <h3 className="font-bold text-sm mb-2">Manual bet — cash already in hand (amount 0 = void)</h3>
           <div className="flex flex-wrap gap-2">
             <input placeholder="Name" value={manual.name}
               onChange={(e) => setManual({ ...manual, name: e.target.value })}
@@ -491,9 +491,9 @@ export default function App() {
       <header className="flex items-center justify-between">
         <h1 className="text-xl font-extrabold">🏊 Khuseel <span className="text-dim">vs</span> Bansod</h1>
         <div className="text-sm text-dim">
-          <button onClick={() => setShowRules(true)} className="underline mr-3">📜 rules</button>
-          {state.me.name}{state.me.is_owner && <span className="text-gold"> · ADMIN</span>}
-          <a href="/auth/logout" className="ml-3 underline">logout</a>
+          <button onClick={() => setShowRules(true)} className="underline mr-3">📜 Rules</button>
+          {state.me.name}{state.me.is_owner && <span className="text-gold"> · Admin</span>}
+          <a href="/auth/logout" className="ml-3 underline">Log out</a>
         </div>
       </header>
       {showRules && <Rules onClose={() => setShowRules(false)} />}
@@ -510,8 +510,8 @@ export default function App() {
       <BookTable bets={state.bets} pool={state.book.pool}
         isOwner={state.me.is_owner && !settlement} refresh={refresh} />
       <p className="text-center text-xs text-dim">
-        Parimutuel pool · winners split 70% of the losing pot pro-rata · 30% to the winning swimmer ·
-        cash-first: bets count only after Abhay confirms cash.
+        Parimutuel pool · Winners split 70% of the losing pot pro-rata · 30% goes to the winning swimmer ·
+        Cash first: bets count only after Abhay confirms cash.
       </p>
     </div>
   );

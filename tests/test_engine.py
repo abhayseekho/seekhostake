@@ -15,16 +15,16 @@ def _bets():
 
 def test_seeded_book_totals():
     book = engine.effective_book(_bets())
-    assert book["pool"] == 65050
+    assert book["pool"] == 60050
     assert book["sides"]["khuseel"]["total"] == 28050
-    assert book["sides"]["bansod"]["total"] == 37000
-    assert book["sides"]["bansod"]["implied_pct"] == 56.9
+    assert book["sides"]["bansod"]["total"] == 32000
+    assert book["sides"]["bansod"]["implied_pct"] == 53.3
 
 
 @pytest.mark.parametrize("winner", engine.SIDES)
 def test_settlement_sums_to_pool(winner):
     s = engine.settle(_bets(), winner)
-    assert s["paid_to_bettors"] + s["swimmer_take"] == 65050
+    assert s["paid_to_bettors"] + s["swimmer_take"] == 60050
     # every winner at least gets their stake back; every loser pays exactly their stake
     for r in s["rows"]:
         if r["side"] == winner:
@@ -35,17 +35,17 @@ def test_settlement_sums_to_pool(winner):
 
 def test_swimmer_take_is_30pct_plus_rounding():
     s = engine.settle(_bets(), "bansod")
-    base = int(0.30 * 28050)  # 8415
+    base = int(0.30 * 28050)  # 8415 (khuseel pot unchanged)
     assert base <= s["swimmer_take"] < base + len(s["rows"])  # remainder < 1 rupee per winner
     s2 = engine.settle(_bets(), "khuseel")
-    assert int(0.30 * 37000) <= s2["swimmer_take"] < 11100 + len(s2["rows"])
+    assert int(0.30 * 32000) <= s2["swimmer_take"] < 9600 + len(s2["rows"])
 
 
 def test_known_payouts():
     s = engine.settle(_bets(), "khuseel")
     by = {r["display_name"]: r for r in s["rows"]}
-    assert by["Yash"]["payout"] == 5000 + (5000 * 25900) // 28050   # 9616
-    assert by["Sarash"]["payout"] == 50 + (50 * 25900) // 28050     # 96
+    assert by["Yash"]["payout"] == 5000 + (5000 * 22400) // 28050   # 8992
+    assert by["Sarash"]["payout"] == 50 + (50 * 22400) // 28050     # 89
     assert by["Shivam"]["net"] == -5000
 
 

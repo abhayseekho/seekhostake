@@ -16,10 +16,9 @@ SEED_BETS = [
     ("Nishay",    500, "khuseel"),
     ("Sarash",     50, "khuseel"),
     ("Shivam",   5000, "bansod"),
-    ("Rajat",    5000, "bansod"),
+    ("Rajat Chawla", 5000, "bansod"),  # Rajat and Chawala are the SAME person (Abhay, 15 Sept)
     ("Mitr",     5000, "bansod"),
     ("Tiwari",   5000, "bansod"),
-    ("Chawala",  5000, "bansod"),
     ("Prince",   5000, "bansod"),
     ("Abrar",    5000, "bansod"),
     ("Varshney", 1000, "bansod"),

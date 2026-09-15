@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+swimbet.db
+frontend/node_modules/
+frontend/dist/
+.DS_Store

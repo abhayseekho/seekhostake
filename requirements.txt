@@ -1,0 +1,8 @@
+# FastAPI app + Google OAuth + Postgres, mirroring marketer/dashboard/requirements.txt
+fastapi>=0.110          # API framework
+uvicorn[standard]>=0.29 # ASGI server (Railway CMD)
+authlib>=1.3            # Google OAuth (OIDC) client
+itsdangerous>=2.1       # Starlette SessionMiddleware signing
+SQLAlchemy>=2.0         # Core-style persistence (store.py)
+psycopg[binary]>=3.1    # Postgres driver on Railway (SQLite fallback needs nothing)
+pydantic>=2.0           # request models

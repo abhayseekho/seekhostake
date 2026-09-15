@@ -50,9 +50,14 @@ def _session_secret() -> str:
     return secret
 
 
+# ALLOW_HTTP=1: session cookie sent over plain http — needed for LAN mode (phones hitting
+# http://<mac-ip>:port are not a secure context, so a Secure cookie would be silently dropped
+# and login would never stick). Never set it on Railway (https there).
+_ALLOW_HTTP = os.environ.get("ALLOW_HTTP", "").lower() in ("1", "true", "yes")
+
 app = FastAPI(title="Swim Bet — Khuseel vs Bansod")
 app.add_middleware(SessionMiddleware, secret_key=_session_secret(),
-                   same_site="lax", https_only=not DEV)
+                   same_site="lax", https_only=not (DEV or _ALLOW_HTTP))
 
 # ── Google OAuth (Authlib) ────────────────────────────────────────────────────────────────────────
 _oauth = None

@@ -192,11 +192,6 @@ async def auth_logout(request: Request):
 
 # ── helpers ──────────────────────────────────────────────────────────────────────────────────────
 
-def _book_rows():
-    return [{"key": b["key"], "display_name": b["display_name"],
-             "side": b["side"], "amount": b["amount"]} for b in store.approved_bets()]
-
-
 def _close_book(admin_key: str):
     n = store.reject_all_pending(admin_key, "book closed at lap 2")
     return n
@@ -212,33 +207,58 @@ def api_config():
 
 @app.get("/api/state")
 def api_state(request: Request):
-    """The one endpoint the UI polls: race, live book/odds, and the caller's own position."""
+    """The one endpoint the UI polls: race, every market's live book/odds, the caller's positions."""
     u = _require(request)
     r = store.get_race()
-    bets = _book_rows()
-    book = rules.effective_book(bets)
-    mine = store.current_approved(u["key"])
-    my_pending = next((b for b in store.pending_bets() if b["key"] == u["key"]), None)
+    by_market = store.approved_by_market()
+    my_pendings = {p["market"]: p for p in store.pending_bets() if p["key"] == u["key"]}
+    mine_all = {b["market"]: b for b in store.my_approved(u["key"])}
+
+    markets = []
+    for m in rules.MARKETS:
+        mid = m["id"]
+        rows = by_market.get(mid, [])
+        book = rules.market_book(mid, rows)
+        my = mine_all.get(mid)
+        pend = my_pendings.get(mid)
+        markets.append({
+            "id": mid, "name": m["name"], "main": bool(m.get("main")),
+            "open": r["phase"] in m["open_phases"],
+            "pool": book["pool"],
+            "outcomes": [{"id": oid, **book["outcomes"][oid],
+                          "alive": rules.outcome_alive(mid, oid, r["laps"])}
+                         for oid, _ in m["outcomes"]],
+            "my_bet": my and {"outcome": my["outcome"], "amount": my["amount"]},
+            "my_pending": pend and {"id": pend["id"], "outcome": pend["outcome"],
+                                    "amount": pend["amount"]},
+        })
+
+    match_rows = by_market.get("match", [])
     out = {
         "auth_mode": AUTH_MODE,
         "me": {"key": u["key"], "name": u["name"], "is_owner": _is_owner(request)},
         "race": {"phase": r["phase"], "laps": r["laps"],
                  "wins": rules.lap_wins(r["laps"]),
                  "book_open": r["phase"] in rules.OPEN_PHASES},
-        "book": book,
-        "bets": sorted(bets, key=lambda b: -b["amount"]),
-        "my_bet": mine and {"side": mine["side"], "amount": mine["amount"]},
-        "my_pending": my_pending and {"id": my_pending["id"], "side": my_pending["side"],
-                                      "amount": my_pending["amount"]},
+        "markets": markets,
+        "bets": sorted(({"key": b["key"], "display_name": b["display_name"],
+                         "side": b["outcome"], "amount": b["amount"]} for b in match_rows),
+                       key=lambda b: -b["amount"]),
         "settled": store.load_settlement() is not None,
+        "rake_pct": int(rules.HOUSE_RAKE * 100),
     }
     if _is_owner(request):
+        human_pool = sum(b["amount"] for b in match_rows if b["key"] != "house")
+        seed = store.house_seed()
         out["pending_count"] = len(store.pending_bets())
+        out["house"] = {"seed": seed and {"outcome": seed["outcome"], "amount": seed["amount"]},
+                        "seed_cap": rules.max_house_seed(human_pool)}
     return out
 
 
 class BetIn(BaseModel):
-    side: str
+    market: str = "match"
+    outcome: str
     amount: int
 
 
@@ -246,19 +266,23 @@ class BetIn(BaseModel):
 def api_submit_bet(request: Request, body: BetIn):
     u = _require(request)
     r = store.get_race()
-    mine = store.current_approved(u["key"])
-    ok, reason = rules.can_submit(r["phase"], body.side, body.amount,
-                                  current_side=mine and mine["side"])
+    mine = store.current_approved(u["key"], body.market)
+    ok, reason = rules.can_submit(body.market, r["phase"], body.outcome, body.amount,
+                                  laps=r["laps"], current_outcome=mine and mine["outcome"])
     if not ok:
         raise HTTPException(400, reason)
-    bet_id = store.submit_bet(u["key"], u["name"], body.side, body.amount)
+    bet_id = store.submit_bet(u["key"], u["name"], body.market, body.outcome, body.amount)
     return {"ok": True, "id": bet_id, "status": "pending"}
 
 
+class CancelIn(BaseModel):
+    market: Optional[str] = None
+
+
 @app.post("/api/bets/cancel")
-def api_cancel_bet(request: Request):
+def api_cancel_bet(request: Request, body: CancelIn = CancelIn()):
     u = _require(request)
-    n = store.cancel_pending(u["key"])
+    n = store.cancel_pending(u["key"], body.market)
     return {"ok": True, "cancelled": n}
 
 
@@ -278,14 +302,16 @@ def api_pending(request: Request):
     _require_owner(request)
     out = []
     for p in store.pending_bets():
-        cur = store.current_approved(p["key"])
-        # cash the admin must have received for this approval to be legit: the full new stake
-        # (a raise supersedes the old bet, but the old cash is already in the pool — so only
-        # the delta is new money when raising on the same side; a fresh bet is the full amount)
-        delta = p["amount"] - (cur["amount"] if cur and cur["side"] == p["side"] else 0)
+        cur = store.current_approved(p["key"], p["market"])
+        # cash the admin must collect: full stake for a new bet; only the delta on a same-outcome
+        # raise (the old cash is already in the pool)
+        delta = p["amount"] - (cur["amount"] if cur and cur["outcome"] == p["outcome"] else 0)
         out.append({"id": p["id"], "key": p["key"], "display_name": p["display_name"],
-                    "side": p["side"], "amount": p["amount"],
-                    "current": cur and {"side": cur["side"], "amount": cur["amount"]},
+                    "market": p["market"], "market_name": rules.MARKET_BY_ID[p["market"]]["name"],
+                    "outcome": p["outcome"],
+                    "outcome_label": dict(rules.MARKET_BY_ID[p["market"]]["outcomes"])[p["outcome"]],
+                    "amount": p["amount"],
+                    "current": cur and {"outcome": cur["outcome"], "amount": cur["amount"]},
                     "cash_to_collect": max(delta, 0)})
     return {"pending": out}
 
@@ -297,9 +323,9 @@ def api_approve(request: Request, bet_id: int):
     p = store.bet_by_id(bet_id)
     if not p or p["status"] != "pending":
         raise HTTPException(404, "not_pending")
-    mine = store.current_approved(p["key"])
-    ok, reason = rules.can_submit(r["phase"], p["side"], p["amount"],
-                                  current_side=mine and mine["side"])
+    mine = store.current_approved(p["key"], p["market"])
+    ok, reason = rules.can_submit(p["market"], r["phase"], p["outcome"], p["amount"],
+                                  laps=r["laps"], current_outcome=mine and mine["outcome"])
     if not ok:  # book may have closed / race moved on since the request was submitted
         store.reject_bet(bet_id, u["key"], note=f"auto-rejected on approve: {reason}")
         raise HTTPException(400, reason)
@@ -317,25 +343,55 @@ def api_reject(request: Request, bet_id: int):
 
 class ManualBet(BaseModel):
     name: str
-    side: str
+    outcome: str
     amount: int  # 0 voids the person's bet (e.g. never paid cash)
+    market: str = "match"
 
 
 @app.post("/api/admin/bets/manual")
 def api_manual(request: Request, body: ManualBet):
     u = _require_owner(request)
-    if body.amount > 0 and body.side not in rules.SIDES:
-        raise HTTPException(400, "bad_side")
+    m = rules.MARKET_BY_ID.get(body.market)
+    if not m:
+        raise HTTPException(400, "bad_market")
+    if body.amount > 0 and body.outcome not in {o for o, _ in m["outcomes"]}:
+        raise HTTPException(400, "bad_outcome")
     if body.amount < 0 or not (2 <= len(body.name.strip()) <= 40):
         raise HTTPException(400, "bad_input")
     if store.load_settlement() is not None:
         raise HTTPException(400, "already_settled")
-    key = store.admin_manual_bet(body.name, body.side or "khuseel", body.amount, u["key"])
+    key = store.admin_manual_bet(body.name, body.market,
+                                 body.outcome or m["outcomes"][0][0], body.amount, u["key"])
     return {"ok": True, "key": key}
+
+
+class HouseSeed(BaseModel):
+    outcome: str
+    amount: int  # 0 removes the seed
+
+
+@app.post("/api/admin/house-seed")
+def api_house_seed(request: Request, body: HouseSeed):
+    """The house's visible position on the match market, hard-capped at the expected rake so
+    the organiser can never end up net negative."""
+    u = _require_owner(request)
+    if body.amount > 0 and body.outcome not in rules.SIDES:
+        raise HTTPException(400, "bad_outcome")
+    if store.load_settlement() is not None:
+        raise HTTPException(400, "already_settled")
+    if store.get_race()["phase"] not in rules.OPEN_PHASES:
+        raise HTTPException(400, "book_closed")
+    human_pool = sum(b["amount"] for b in store.approved_bets("match") if b["key"] != "house")
+    cap = rules.max_house_seed(human_pool)
+    if body.amount > cap:
+        raise HTTPException(400, f"seed_exceeds_rake_cap:{cap}")
+    store.set_house_seed("match", body.outcome, body.amount, u["key"])
+    return {"ok": True, "cap": cap}
 
 
 class VoidBet(BaseModel):
     key: str
+    market: Optional[str] = None
 
 
 @app.post("/api/admin/bets/void")
@@ -343,7 +399,7 @@ def api_void(request: Request, body: VoidBet):
     u = _require_owner(request)
     if store.load_settlement() is not None:
         raise HTTPException(400, "already_settled")
-    n = store.void_key(body.key, u["key"])
+    n = store.void_key(body.key, u["key"], body.market)
     if not n:
         raise HTTPException(404, "no_live_bet")
     return {"ok": True, "voided": n}
@@ -392,7 +448,7 @@ def api_settle(request: Request):
     if r["phase"] != "finished" or not winner:
         raise HTTPException(400, "race_not_finished")
     store.reject_all_pending(u["key"], "race settled")
-    result = rules.settle(_book_rows(), winner)
+    result = rules.settle_all(store.approved_by_market(), r["laps"])
     if not store.save_settlement(result):
         raise HTTPException(400, "already_settled")
     store.set_race("settled", r["laps"])

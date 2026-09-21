@@ -36,12 +36,20 @@ const REASON_TEXT = {
 };
 
 // ── login ────────────────────────────────────────────────────────────────────────────────────────
-function Login({ authMode, onNamed }) {
+function Login({ authMode, testLogin, onNamed }) {
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
   const [showRules, setShowRules] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
   const [pw, setPw] = useState("");
+  const [showTest, setShowTest] = useState(false);
+  const [tEmail, setTEmail] = useState("");
+  const [tPw, setTPw] = useState("");
+  const submitTest = async () => {
+    const r = await post("/auth/test", { email: tEmail, password: tPw });
+    if (r._error) setErr(r._error === "not_allowed" ? "Email must be @seekhoapp.com." : "Wrong test password.");
+    else onNamed();
+  };
   const submitName = async () => {
     const r = await post("/auth/name", { name });
     if (r._error) setErr(r._error === "bad_name" ? "Enter your real name (2–40 chars)." : r._error);
@@ -85,10 +93,29 @@ function Login({ authMode, onNamed }) {
             )}
           </div>
         ) : (
-          <a href="/auth/login"
-            className="block w-full bg-khuseel text-bg font-extrabold rounded-xl py-3">
-            Sign in with Google (@seekhoapp.com)
-          </a>
+          <div className="space-y-3">
+            <a href="/auth/login"
+              className="block w-full bg-khuseel text-bg font-extrabold rounded-xl py-3">
+              Sign in with Google (@seekhoapp.com)
+            </a>
+            {testLogin && (showTest ? (
+              <div className="space-y-2">
+                <input placeholder="test email (@seekhoapp.com)" value={tEmail}
+                  onChange={(e) => setTEmail(e.target.value)}
+                  className="w-full bg-bg border border-edge rounded-xl px-4 py-2 outline-none text-sm" />
+                <div className="flex gap-2">
+                  <input type="password" placeholder="Test password" value={tPw}
+                    onChange={(e) => setTPw(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && submitTest()}
+                    className="flex-1 bg-bg border border-edge rounded-xl px-4 py-2 outline-none text-sm" />
+                  <button onClick={submitTest} className="bg-gold text-bg font-bold rounded-xl px-4">Go</button>
+                </div>
+                {err && <p className="text-bad text-sm">{err}</p>}
+              </div>
+            ) : (
+              <button onClick={() => setShowTest(true)} className="text-faint text-xs underline">Test login</button>
+            ))}
+          </div>
         )}
       </div>
     </div>
@@ -374,9 +401,11 @@ function Settlement({ s, race }) {
           <span className="bg-gold/10 text-gold font-bold text-sm rounded-xl px-4 py-1.5">
             Swimmer {inr(s.swimmer_take)}
           </span>
-          <span className="bg-raise text-dim font-bold text-sm rounded-xl px-4 py-1.5">
-            House {inr(s.house_take)}
-          </span>
+          {s.house_take != null && (
+            <span className="bg-raise text-dim font-bold text-sm rounded-xl px-4 py-1.5">
+              House {inr(s.house_take)}
+            </span>
+          )}
         </div>
       </div>
 
@@ -639,18 +668,17 @@ function Rules({ onClose }) {
             are auto-rejected (cash returned).</p>
         </S>
         <S n={5} title="Payouts (pool betting)">
-          <p>Each market is one pool. A <b className="text-gold">5% house fee</b> comes off every pool.
-            On the <b className="text-ink">main market</b>, the losing side's money (after the fee) splits
-            <b className="text-gold"> 30% to the winning swimmer</b>, 70% to winning bettors pro-rata —
-            plus your stake back. On side markets, winners share the whole post-fee pool pro-rata.</p>
-          <p>Payouts round down to the rupee; remainders go with the house fee. Every rupee is
-            accounted for in the final payout sheet.</p>
+          <p>Each market is one pool. If your pick loses, your stake is gone. If it wins, you're
+            paid out of the pool at the multiplier system — on the <b className="text-ink">main
+            market</b>, <b className="text-gold">30% of the winnings pot goes to the winning
+            swimmer</b>; the man in the water gets paid too.</p>
+          <p>Payouts round down to the rupee. The final payout sheet at settlement is the
+            authoritative record.</p>
         </S>
-        <S n={6} title="The house may hold a position">
-          <p>The organiser may place a visible <b className="text-gold">"House"</b> bet on the main
-            market, capped at the house fee — it shows in the book like any other bet and can lose
-            like any other bet. Odds shown are <b className="text-ink">indicative</b> and final only
-            when the book closes.</p>
+        <S n={6} title="Odds are live">
+          <p>The multiplier shown is <b className="text-ink">indicative</b> — it moves as money
+            comes in and is final only when the book closes. More money on your pick = smaller
+            multiplier.</p>
         </S>
         <S n={7} title="Disputes">
           <p>This portal's record is final. Lap results are entered by the organiser at the pool.
@@ -669,6 +697,7 @@ export default function App() {
   const [state, setState] = useState(null);
   const [unauth, setUnauth] = useState(false);
   const [authMode, setAuthMode] = useState("oauth");
+  const [testLogin, setTestLogin] = useState(false);
   const [picked, setPicked] = useState(null);
   const [settlement, setSettlement] = useState(null);
   const [showRules, setShowRules] = useState(false);
@@ -687,13 +716,16 @@ export default function App() {
   }, [settlement]);
 
   useEffect(() => {
-    get("/api/config").then((c) => c && c.auth_mode && setAuthMode(c.auth_mode));
+    get("/api/config").then((c) => {
+      if (c && c.auth_mode) setAuthMode(c.auth_mode);
+      if (c) setTestLogin(!!c.test_login);
+    });
     refresh();
     const t = setInterval(refresh, 3000);
     return () => clearInterval(t);
   }, [refresh]);
 
-  if (unauth) return <Login authMode={authMode} onNamed={refresh} />;
+  if (unauth) return <Login authMode={authMode} testLogin={testLogin} onNamed={refresh} />;
   if (!state) return <div className="min-h-screen flex items-center justify-center text-dim">Loading…</div>;
 
   const main = state.markets.find((m) => m.main);

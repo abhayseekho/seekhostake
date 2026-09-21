@@ -166,6 +166,27 @@ def auth_name(request: Request, body: NameLogin):
     return {"ok": True}
 
 
+class TestLogin(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/auth/test")
+def auth_test(request: Request, body: TestLogin):
+    """Env-gated test login (TEST_LOGIN_PASSWORD): sign in as any allowed-domain email without
+    Google — for pre-race admin/user-side checks. Unset the env var to disable. Invisible when off."""
+    expected = os.environ.get("TEST_LOGIN_PASSWORD", "")
+    if not expected:
+        raise HTTPException(404)
+    if body.password != expected:
+        raise HTTPException(403, "wrong_password")
+    email = body.email.lower().strip()
+    if not _allowed(email):
+        raise HTTPException(403, "not_allowed")
+    request.session["user"] = {"key": email, "name": email.split("@")[0].replace(".", " ").title()}
+    return {"ok": True}
+
+
 class AdminLogin(BaseModel):
     password: str
 
@@ -202,13 +223,15 @@ def _close_book(admin_key: str):
 @app.get("/api/config")
 def api_config():
     """Unauthenticated: the login screen needs to know which auth mode to render."""
-    return {"auth_mode": AUTH_MODE}
+    return {"auth_mode": AUTH_MODE,
+            "test_login": bool(os.environ.get("TEST_LOGIN_PASSWORD"))}
 
 
 @app.get("/api/state")
 def api_state(request: Request):
     """The one endpoint the UI polls: race, every market's live book/odds, the caller's positions."""
     u = _require(request)
+    owner = _is_owner(request)
     r = store.get_race()
     by_market = store.approved_by_market()
     my_pendings = {p["market"]: p for p in store.pending_bets() if p["key"] == u["key"]}
@@ -219,13 +242,27 @@ def api_state(request: Request):
         mid = m["id"]
         rows = by_market.get(mid, [])
         book = rules.market_book(mid, rows)
+        # Bettors see quoted odds only — the house position is priced into est_mult but never
+        # itemized for them: displayed totals/pool exclude house rows for non-admins.
+        shown_totals = {}
+        for oid, _label in m["outcomes"]:
+            o = book["outcomes"][oid]
+            if owner:
+                shown_totals[oid] = (o["total"], o["bettors"])
+            else:
+                house_amt = sum(int(b["amount"]) for b in rows
+                                if b["key"] == "house" and b["outcome"] == oid)
+                house_n = sum(1 for b in rows if b["key"] == "house" and b["outcome"] == oid)
+                shown_totals[oid] = (o["total"] - house_amt, o["bettors"] - house_n)
         my = mine_all.get(mid)
         pend = my_pendings.get(mid)
         markets.append({
             "id": mid, "name": m["name"], "main": bool(m.get("main")),
             "open": r["phase"] in m["open_phases"],
-            "pool": book["pool"],
-            "outcomes": [{"id": oid, **book["outcomes"][oid],
+            "pool": sum(t for t, _ in shown_totals.values()),
+            "outcomes": [{"id": oid, "label": book["outcomes"][oid]["label"],
+                          "est_mult": book["outcomes"][oid]["est_mult"],
+                          "total": shown_totals[oid][0], "bettors": shown_totals[oid][1],
                           "alive": rules.outcome_alive(mid, oid, r["laps"])}
                          for oid, _ in m["outcomes"]],
             "my_bet": my and {"outcome": my["outcome"], "amount": my["amount"]},
@@ -236,20 +273,21 @@ def api_state(request: Request):
     match_rows = by_market.get("match", [])
     out = {
         "auth_mode": AUTH_MODE,
-        "me": {"key": u["key"], "name": u["name"], "is_owner": _is_owner(request)},
+        "me": {"key": u["key"], "name": u["name"], "is_owner": owner},
         "race": {"phase": r["phase"], "laps": r["laps"],
                  "wins": rules.lap_wins(r["laps"]),
                  "book_open": r["phase"] in rules.OPEN_PHASES},
         "markets": markets,
         "bets": sorted(({"key": b["key"], "display_name": b["display_name"],
-                         "side": b["outcome"], "amount": b["amount"]} for b in match_rows),
+                         "side": b["outcome"], "amount": b["amount"]}
+                        for b in match_rows if owner or b["key"] != "house"),
                        key=lambda b: -b["amount"]),
         "settled": store.load_settlement() is not None,
-        "rake_pct": int(rules.HOUSE_RAKE * 100),
     }
-    if _is_owner(request):
+    if owner:
         human_pool = sum(b["amount"] for b in match_rows if b["key"] != "house")
         seed = store.house_seed()
+        out["rake_pct"] = int(rules.HOUSE_RAKE * 100)
         out["pending_count"] = len(store.pending_bets())
         out["house"] = {"seed": seed and {"outcome": seed["outcome"], "amount": seed["amount"]},
                         "seed_cap": rules.max_house_seed(human_pool)}
@@ -292,7 +330,17 @@ def api_settlement(request: Request):
     s = store.load_settlement()
     if s is None:
         raise HTTPException(404, "not_settled")
-    return s
+    if _is_owner(request):
+        return s
+    # Bettor view: winner, swimmer's cut, market results, and the per-person payout sheet —
+    # house internals (rake, seed rows, per-market house lines) stay admin-only.
+    return {
+        "winner": s["winner"],
+        "swimmer_take": s["swimmer_take"],
+        "aggregate": s["aggregate"],
+        "markets": [{"market": m["market"], "name": m["name"], "won": m["won"], "void": m["void"]}
+                    for m in s["markets"]],
+    }
 
 
 # ── admin API ────────────────────────────────────────────────────────────────────────────────────

@@ -433,6 +433,10 @@ function Admin({ state, refresh }) {
             <button onClick={() => act(() => post("/api/admin/seed"))}
               className="bg-raise border border-edge rounded-xl px-4 py-2.5 text-dim">Load WhatsApp book</button>
           )}
+          {book.pool > 0 && race.phase === "prerace" && (
+            <button onClick={() => { if (confirm("Wipe ALL bets and reload the seed book (full names)? Portal bets placed since seeding will be lost.")) act(() => post("/api/admin/reset-book")); }}
+              className="bg-raise border border-edge rounded-xl px-4 py-2.5 text-dim">Reset to seed book</button>
+          )}
         </div>
         {race.phase === "break1" && (
           <p className="text-[11px] text-gold mt-2">⚠ Starting lap 2 auto-rejects all unpaid pending bets.</p>

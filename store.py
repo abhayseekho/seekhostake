@@ -180,6 +180,14 @@ def admin_manual_bet(name, side, amount, admin_email):
     return key
 
 
+def reset_book(rows, admin_email):
+    """Pre-race only (enforced at the API): wipe ALL bets and reload the seed. Used to refresh
+    the live book after seed corrections (full names, merged bettors) without hand-voiding."""
+    with engine.begin() as cx:
+        cx.execute(bets.delete())
+    return seed_bets(rows)
+
+
 def void_key(key, admin_email):
     """Void a person's live bet by exact key (works for portal email keys too, unlike
     admin_manual_bet which only reaches name-keyed entries)."""

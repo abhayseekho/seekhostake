@@ -44,9 +44,9 @@ def test_swimmer_take_is_30pct_plus_rounding():
 def test_known_payouts():
     s = engine.settle(_bets(), "khuseel")
     by = {r["display_name"]: r for r in s["rows"]}
-    assert by["Yash"]["payout"] == 5000 + (5000 * 22400) // 28050   # 8992
-    assert by["Sarash"]["payout"] == 50 + (50 * 22400) // 28050     # 89
-    assert by["Shivam"]["net"] == -5000
+    assert by["Yash Banwani"]["payout"] == 5000 + (5000 * 22400) // 28050   # 8992
+    assert by["Saaransh"]["payout"] == 50 + (50 * 22400) // 28050           # 89
+    assert by["Shivam Maheshwari"]["net"] == -5000
 
 
 def test_no_winner_backers_refunds_70pct():

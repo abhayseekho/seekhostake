@@ -406,6 +406,17 @@ def api_seed(request: Request):
     return {"ok": True, "seeded": n}
 
 
+@app.post("/api/admin/reset-book")
+def api_reset_book(request: Request):
+    """Wipe every bet and reload the current seed. Only while the race hasn't started —
+    the escape hatch for seed corrections (e.g. full names) on an already-seeded book."""
+    u = _require_owner(request)
+    if store.get_race()["phase"] != "prerace":
+        raise HTTPException(400, "race_started")
+    n = store.reset_book(SEED_BETS, u["key"])
+    return {"ok": True, "seeded": n}
+
+
 # ── static SPA (marketer dashboard pattern: immutable hashed assets, no-cache index.html) ─────────
 class _ImmutableStatic(StaticFiles):
     async def get_response(self, path, scope):

@@ -236,13 +236,19 @@ def api_state(request: Request, as_user: bool = False):
     owner = can_admin and not as_user
     r = store.get_race()
     by_market = store.approved_by_market()
-    my_pendings = {p["market"]: p for p in store.pending_bets() if p["key"] == u["key"]}
+    all_pending = store.pending_bets()
+    pending_by_market = {}
+    for p in all_pending:
+        pending_by_market.setdefault(p["market"], []).append(p)
+    my_pendings = {p["market"]: p for p in all_pending if p["key"] == u["key"]}
     mine_all = {b["market"]: b for b in store.my_approved(u["key"])}
 
     markets = []
     for m in rules.MARKETS:
         mid = m["id"]
-        rows = by_market.get(mid, [])
+        # Displayed (indicative) odds include pending requests so the market reflects demand the
+        # moment it's submitted; settlement always uses approved cash only.
+        rows = by_market.get(mid, []) + pending_by_market.get(mid, [])
         book = rules.market_book(mid, rows)
         # Bettors see quoted odds only — the house position is priced into est_mult but never
         # itemized for them: displayed totals/pool exclude house rows for non-admins.

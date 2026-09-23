@@ -29,10 +29,10 @@ const PHASE_LABEL = {
 
 const REASON_TEXT = {
   book_closed: "This market is closed.",
-  no_side_switch: "Side locked after lap 1 — raise on your swimmer only.",
-  bad_amount: "Enter a whole-rupee amount of at least ₹1.",
-  outcome_dead: "That outcome is no longer possible.",
-  not_pending: "That request was already handled.",
+  no_side_switch: "Side switching is locked after lap 1. You can raise your existing pick only.",
+  bad_amount: "Enter a valid amount (minimum ₹1).",
+  outcome_dead: "This outcome is no longer possible.",
+  not_pending: "This request was already handled.",
 };
 
 // ── login ────────────────────────────────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ function Login({ authMode, testLogin, onNamed }) {
           Seekho<span className="text-gold">Stake</span>
         </h1>
         <p className="text-dim mb-2">Khuseel vs Bansod · Best of 3 · 16 Sept</p>
-        <button onClick={() => setShowRules(true)} className="text-dim text-sm underline mb-6">📜 Read the rules</button>
+        <button onClick={() => setShowRules(true)} className="text-dim text-sm underline mb-6">Rules</button>
         {showRules && <Rules onClose={() => setShowRules(false)} />}
         {authMode === "name" ? (
           <div className="space-y-3">
@@ -279,7 +279,7 @@ function BetSlip({ picked, refresh, onClear }) {
     setMsg(null);
     const r = await post("/api/bets", { market: picked.market, outcome: picked.outcome, amount: amt });
     if (r._error) setMsg({ ok: false, text: REASON_TEXT[r._error] || r._error });
-    else { setMsg({ ok: true, text: "Sent — pay cash to Abhay to confirm." }); setAmount(""); }
+    else { setMsg({ ok: true, text: "Request submitted. Pay cash to confirm your bet." }); setAmount(""); }
     refresh();
   };
 
@@ -290,7 +290,7 @@ function BetSlip({ picked, refresh, onClear }) {
         {picked && <button onClick={onClear} className="text-faint text-xs underline">Clear</button>}
       </div>
       {!picked ? (
-        <p className="text-dim text-sm">Tap any outcome to bet.</p>
+        <p className="text-dim text-sm">Select an outcome to place a bet.</p>
       ) : (
         <>
           <p className="text-xs text-dim">
@@ -314,7 +314,7 @@ function BetSlip({ picked, refresh, onClear }) {
             </div>
           ) : (
             <p className="text-[11px] text-faint px-0.5">
-              First bet on this outcome — odds appear as money comes in.
+              Odds form once bets are placed on this outcome.
             </p>
           ))}
           <button disabled={amt < 1} onClick={submit}
@@ -427,7 +427,7 @@ function Settlement({ s, race }) {
 
       <div className="bg-card border border-edge rounded-2xl p-4 overflow-x-auto">
         <h2 className="text-[11px] font-bold tracking-[.13em] text-faint uppercase mb-2">
-          Payout sheet · all markets combined</h2>
+          Payout sheet</h2>
         <table className="w-full text-sm">
           <thead><tr className="text-faint text-[10px] uppercase tracking-[.1em] text-left">
             <th className="pb-2 font-semibold">Bettor</th>
@@ -485,7 +485,7 @@ function Admin({ state, refresh }) {
       <div>
         <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
           Pending · collect cash first ({pending.length})</h3>
-        {pending.length === 0 && <p className="text-faint text-sm">Queue empty.</p>}
+        {pending.length === 0 && <p className="text-faint text-sm">No pending requests.</p>}
         {pending.map((p) => {
           const raise = p.current && p.current.outcome === p.outcome;
           return (
@@ -506,7 +506,7 @@ function Admin({ state, refresh }) {
               </div>
               <div className="flex gap-2 shrink-0 ml-2">
                 <button onClick={() => act(() => post(`/api/admin/bets/${p.id}/approve`))}
-                  className="bg-khuseel text-bg font-extrabold rounded-lg px-3 py-1.5 text-xs">✓ Cash in</button>
+                  className="bg-khuseel text-bg font-extrabold rounded-lg px-3 py-1.5 text-xs">Approve</button>
                 <button onClick={() => act(() => post(`/api/admin/bets/${p.id}/reject`))}
                   className="border border-edge text-bad rounded-lg px-2.5 py-1.5 text-xs">✕</button>
               </div>
@@ -549,7 +549,7 @@ function Admin({ state, refresh }) {
           )}
           {matchPool === 0 && race.phase === "prerace" && (
             <button onClick={() => act(() => post("/api/admin/seed"))}
-              className="bg-raise border border-edge rounded-xl px-4 py-2.5 text-dim">Load WhatsApp book</button>
+              className="bg-raise border border-edge rounded-xl px-4 py-2.5 text-dim">Load seed book</button>
           )}
           {matchPool > 0 && race.phase === "prerace" && (
             <button onClick={() => { if (confirm("Wipe ALL bets in ALL markets and reload the seed book? Portal bets placed since seeding will be lost.")) act(() => post("/api/admin/reset-book")); }}
@@ -557,7 +557,7 @@ function Admin({ state, refresh }) {
           )}
         </div>
         {race.phase === "break1" && (
-          <p className="text-[11px] text-gold mt-2">⚠ Starting lap 2 auto-rejects all unpaid pending bets.</p>
+          <p className="text-[11px] text-gold mt-2">Starting lap 2 closes all betting; unapproved requests are rejected.</p>
         )}
       </div>
 
@@ -648,52 +648,47 @@ function Rules({ onClose }) {
       <div className="bg-card border border-edge rounded-2xl p-6 max-w-lg w-full my-8 text-left"
         onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-extrabold">📜 Rulebook</h2>
+          <h2 className="text-xl font-extrabold">Rules</h2>
           <button onClick={onClose} className="text-dim text-2xl leading-none">×</button>
         </div>
 
         <S n={1} title="The race">
-          <p>Khuseel vs Bansod, best of 3 laps of 25m each. First to win 2 laps wins the match —
-            if someone takes the first two, there is no lap 3. ~15-minute break between laps.</p>
+          <p>Khuseel vs Bansod, best of 3 laps of 25m. First to 2 lap wins takes the match;
+            a 2–0 start ends it. ~15-minute break between laps.</p>
         </S>
-        <S n={2} title="How to bet — cash first">
-          <p>① Pay your stake in <b className="text-ink">cash to Abhay</b>. ② Submit the same bet
-            here. ③ Your bet shows as <b className="text-gold">pending</b> until Abhay confirms the
-            cash and approves it. Only approved bets are in a pool — no cash, no bet.</p>
+        <S n={2} title="Placing a bet">
+          <p>Pay your stake in <b className="text-ink">cash to the organiser</b>, then submit the
+            bet here. It remains <b className="text-gold">pending</b> until the organiser approves
+            it. Only approved bets enter a pool.</p>
         </S>
         <S n={3} title="Markets">
-          <p><b className="text-ink">Match Winner</b> is the main pool. Side pools: Correct Score,
-            Goes to Lap 3, each Lap's Winner, and (during break 1) the Comeback special. One live
-            bet per person <b className="text-ink">per market</b> — your latest approved bet in a
-            market replaces your older one there.</p>
-          <p>If an outcome becomes impossible mid-race (e.g. "Khuseel 2–0" after Bansod takes lap 1),
-            it can no longer be backed — money already on it stays in the pool for the surviving outcomes.
-            If a market never happens (Lap 3 Winner in a 2–0 sweep), it's <b className="text-ink">void
-            and fully refunded</b>.</p>
+          <p><b className="text-ink">Match Winner</b> is the main market; side markets are listed
+            on the board. One live bet per person per market — a newer approved bet replaces your
+            earlier one in that market.</p>
+          <p>Outcomes that become impossible mid-race close automatically. A market that never
+            takes place (e.g. Lap 3 Winner in a 2–0 result) is <b className="text-ink">void and
+            fully refunded</b>.</p>
         </S>
-        <S n={4} title="When you can bet">
-          <p>Before the race and during <b className="text-ink">break 1</b> (Lap 1 Winner closes when
-            lap 1 starts; Comeback opens only in break 1). On the <b className="text-ink">main market</b> you
-            cannot switch swimmers once lap 1 starts — raises only. Everything
-            <b className="text-ink"> closes for good when lap 2 starts</b>; unapproved pending bets
-            are auto-rejected (cash returned).</p>
+        <S n={4} title="Betting windows">
+          <p>Bets are accepted before the race and during break 1. On the main market, sides are
+            locked once lap 1 starts — raises only. All betting
+            <b className="text-ink"> closes when lap 2 starts</b>; unapproved requests are then
+            rejected and cash returned.</p>
         </S>
-        <S n={5} title="Payouts (pool betting)">
-          <p>Each market is one pool. If your pick loses, your stake is gone. If it wins, you're
-            paid out of the pool at the multiplier system — on the <b className="text-ink">main
-            market</b>, <b className="text-gold">30% of the winnings pot goes to the winning
-            swimmer</b>; the man in the water gets paid too.</p>
-          <p>Payouts round down to the rupee. The final payout sheet at settlement is the
-            authoritative record.</p>
+        <S n={5} title="Payouts">
+          <p>Pool betting: a losing stake is forfeited; a winning bet is paid from the pool at the
+            prevailing multiplier. On the main market, <b className="text-gold">30% of the winnings
+            pot goes to the winning swimmer</b>.</p>
+          <p>Payouts round down to the rupee. The settlement payout sheet is the authoritative
+            record.</p>
         </S>
-        <S n={6} title="Odds are live">
-          <p>The multiplier shown is <b className="text-ink">indicative</b> — it moves as money
-            comes in and is final only when the book closes. More money on your pick = smaller
-            multiplier.</p>
+        <S n={6} title="Odds">
+          <p>Displayed multipliers are <b className="text-ink">indicative</b> and move with the
+            pool; they are final when the book closes.</p>
         </S>
         <S n={7} title="Disputes">
-          <p>This portal's record is final. Lap results are entered by the organiser at the pool.
-            Abhay is cashier and referee — his call stands.</p>
+          <p>Lap results are recorded by the organiser at the pool. The organiser's decision is
+            final.</p>
         </S>
         <button onClick={onClose} className="w-full bg-khuseel text-bg font-bold rounded-xl py-3 mt-2">
           Got it

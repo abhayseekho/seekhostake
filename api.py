@@ -228,10 +228,12 @@ def api_config():
 
 
 @app.get("/api/state")
-def api_state(request: Request):
-    """The one endpoint the UI polls: race, every market's live book/odds, the caller's positions."""
+def api_state(request: Request, as_user: bool = False):
+    """The one endpoint the UI polls: race, every market's live book/odds, the caller's positions.
+    as_user=1 lets the admin preview the exact bettor-sanitized payload."""
     u = _require(request)
-    owner = _is_owner(request)
+    can_admin = _is_owner(request)
+    owner = can_admin and not as_user
     r = store.get_race()
     by_market = store.approved_by_market()
     my_pendings = {p["market"]: p for p in store.pending_bets() if p["key"] == u["key"]}
@@ -273,7 +275,7 @@ def api_state(request: Request):
     match_rows = by_market.get("match", [])
     out = {
         "auth_mode": AUTH_MODE,
-        "me": {"key": u["key"], "name": u["name"], "is_owner": owner},
+        "me": {"key": u["key"], "name": u["name"], "is_owner": owner, "can_admin": can_admin},
         "race": {"phase": r["phase"], "laps": r["laps"],
                  "wins": rules.lap_wins(r["laps"]),
                  "book_open": r["phase"] in rules.OPEN_PHASES},
@@ -325,12 +327,12 @@ def api_cancel_bet(request: Request, body: CancelIn = CancelIn()):
 
 
 @app.get("/api/settlement")
-def api_settlement(request: Request):
+def api_settlement(request: Request, as_user: bool = False):
     _require(request)
     s = store.load_settlement()
     if s is None:
         raise HTTPException(404, "not_settled")
-    if _is_owner(request):
+    if _is_owner(request) and not as_user:
         return s
     # Bettor view: winner, swimmer's cut, market results, and the per-person payout sheet —
     # house internals (rake, seed rows, per-market house lines) stay admin-only.

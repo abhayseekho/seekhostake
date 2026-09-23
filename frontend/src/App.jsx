@@ -707,19 +707,21 @@ export default function App() {
   const [picked, setPicked] = useState(null);
   const [settlement, setSettlement] = useState(null);
   const [showRules, setShowRules] = useState(false);
+  const [asUser, setAsUser] = useState(false);
 
   const refresh = useCallback(async () => {
-    const r = await get("/api/state");
+    const q = asUser ? "?as_user=1" : "";
+    const r = await get("/api/state" + q);
     if (r._unauth) { setUnauth(true); return; }
     if (r._error) return;
     setUnauth(false);
     setState(r);
     if (r.auth_mode) setAuthMode(r.auth_mode);
     if (r.settled && !settlement) {
-      const s = await get("/api/settlement");
+      const s = await get("/api/settlement" + q);
       if (!s._error) setSettlement(s);
     }
-  }, [settlement]);
+  }, [settlement, asUser]);
 
   useEffect(() => {
     get("/api/config").then((c) => {
@@ -745,6 +747,13 @@ export default function App() {
           🏊 Seekho<span className="text-gold">Stake</span>
         </h1>
         <div className="text-xs text-dim flex items-center gap-3">
+          {state.me.can_admin && (
+            <button onClick={() => { setAsUser(!asUser); setSettlement(null); }}
+              className={`rounded-lg px-2.5 py-1 font-bold border ${asUser
+                ? "border-gold text-gold" : "border-edge text-dim"}`}>
+              {asUser ? "User view · back to admin" : "View as user"}
+            </button>
+          )}
           <button onClick={() => setShowRules(true)} className="underline">Rules</button>
           <span>{state.me.name}{state.me.is_owner && <span className="text-gold font-bold"> · ADMIN</span>}</span>
           <a href="/auth/logout" className="underline">Logout</a>

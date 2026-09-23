@@ -132,6 +132,21 @@ def test_settle_all_aggregate():
     assert not any(p["key"] == "house" for p in s["aggregate"])
 
 
+def test_house_floor_enumeration():
+    assert len(engine.race_scripts()) == 6           # BB, BKB, BKK, KK, KBK, KBB
+    assert len(engine.race_scripts(LAPS_B20[:1])) == 3
+    # match seed alone, capped at rake → floor >= 0 in every script
+    floor = engine.house_floor({"match": _match_bets(house_seed=3000)})
+    assert floor >= 0
+    # a reckless one-sided side seed can create a losing scenario the floor must catch:
+    # house 500 on 'no', humans 500 on 'yes', a 3-lap race makes 'yes' win and house lose
+    risky = {"match": _match_bets(house_seed=3000),
+             "distance": _mk([("yes", 500)]) + [{"key": "house:distance:no",
+                                                 "display_name": "House", "outcome": "no",
+                                                 "amount": 500}]}
+    assert engine.house_floor(risky) < engine.house_floor({"match": _match_bets(house_seed=3000)})
+
+
 def test_can_submit_rules():
     ok, _ = engine.can_submit("match", "prerace", "khuseel", 500)
     assert ok

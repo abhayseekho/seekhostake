@@ -564,7 +564,10 @@ function Admin({ state, refresh }) {
       {house && race.phase !== "settled" && (
         <div>
           <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
-            House seed · cap {inr(house.seed_cap)} (= expected rake)</h3>
+            House seed · cap {inr(house.seed_cap)} ·{" "}
+            <span className={house.floor >= 0 ? "text-khuseel" : "text-bad"}>
+              worst case {house.floor >= 0 ? "+" : "−"}{inr(Math.abs(house.floor))}
+            </span></h3>
           <div className="flex flex-wrap gap-2 items-center">
             <span className="text-xs text-dim">
               {house.seed ? <>Current: <b className={TONE_TEXT[tone(house.seed.outcome)]}>

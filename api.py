@@ -292,7 +292,8 @@ def api_state(request: Request, as_user: bool = False):
         out["rake_pct"] = int(rules.HOUSE_RAKE * 100)
         out["pending_count"] = len(store.pending_bets())
         out["house"] = {"seed": seed and {"outcome": seed["outcome"], "amount": seed["amount"]},
-                        "seed_cap": rules.max_house_seed(human_pool)}
+                        "seed_cap": rules.max_house_seed(human_pool),
+                        "floor": rules.house_floor(by_market, r["laps"])}
     return out
 
 
@@ -436,8 +437,14 @@ def api_house_seed(request: Request, body: HouseSeed):
     cap = rules.max_house_seed(human_pool)
     if body.amount > cap:
         raise HTTPException(400, f"seed_exceeds_rake_cap:{cap}")
+    prev = store.house_seed()
     store.set_house_seed("match", body.outcome, body.amount, u["key"])
-    return {"ok": True, "cap": cap}
+    floor = rules.house_floor(store.approved_by_market(), store.get_race()["laps"])
+    if floor < 0:  # would create a losing scenario — revert and refuse
+        store.set_house_seed("match", prev["outcome"] if prev else "bansod",
+                             prev["amount"] if prev else 0, u["key"])
+        raise HTTPException(400, f"floor_negative:{floor}")
+    return {"ok": True, "cap": cap, "floor": floor}
 
 
 class SideSeeds(BaseModel):
@@ -469,8 +476,16 @@ def api_side_seeds(request: Request, body: SideSeeds):
         else:
             amts = {oid: body.per_market // len(oids) for oid in oids}
         rows += [(m["id"], oid, amts[oid]) for oid in oids]
+    prev = {(b["market"], b["outcome"]): b["amount"]
+            for b in store.approved_bets() if b["key"].startswith("house:")}
     n = store.seed_side_markets(rows, u["key"])
-    return {"ok": True, "outcomes_seeded": n, "per_market": body.per_market, "tilt": body.tilt}
+    floor = rules.house_floor(store.approved_by_market(), store.get_race()["laps"])
+    if floor < 0:  # would create a losing scenario — restore previous liquidity and refuse
+        restore = [(mid, oid, prev.get((mid, oid), 0)) for mid, oid, _ in rows]
+        store.seed_side_markets(restore, u["key"])
+        raise HTTPException(400, f"floor_negative:{floor}")
+    return {"ok": True, "outcomes_seeded": n, "per_market": body.per_market,
+            "tilt": body.tilt, "floor": floor}
 
 
 class VoidBet(BaseModel):

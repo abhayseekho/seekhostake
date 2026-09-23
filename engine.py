@@ -259,6 +259,33 @@ def settle_all(bets_by_market, laps):
             "swimmer_take": swimmer_total, "house_take": house_total, "total_pool": total_pool}
 
 
+def race_scripts(laps=()):
+    """Every possible completion of the current lap history into a decided match (≤6 pre-race)."""
+    out = []
+
+    def rec(seq):
+        if race_winner(seq):
+            out.append(seq)
+            return
+        if len(seq) >= 3:
+            return
+        for s in SIDES:
+            rec(seq + [{"lap": len(seq) + 1, "winner": s, "time_s": None}])
+
+    rec(list(laps))
+    return out
+
+
+def house_floor(bets_by_market, laps=()):
+    """The organiser's GUARANTEED minimum take: settle every market under every possible race
+    outcome and take the worst total. Seed changes must keep this >= 0 — that is the literal
+    'house never loses' invariant, enforced at the API."""
+    scripts = race_scripts(laps)
+    if not scripts:
+        return 0
+    return min(settle_all(bets_by_market, s)["house_take"] for s in scripts)
+
+
 def max_house_seed(match_pool_human):
     """The seed cap that keeps the organiser net-non-negative: expected rake on the main market."""
     return int(HOUSE_RAKE * match_pool_human)

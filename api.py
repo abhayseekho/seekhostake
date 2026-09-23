@@ -257,7 +257,7 @@ def api_state(request: Request):
         my = mine_all.get(mid)
         pend = my_pendings.get(mid)
         markets.append({
-            "id": mid, "name": m["name"], "main": bool(m.get("main")),
+            "id": mid, "name": m["name"], "sub": m.get("sub"), "main": bool(m.get("main")),
             "open": r["phase"] in m["open_phases"],
             "pool": sum(t for t, _ in shown_totals.values()),
             "outcomes": [{"id": oid, "label": book["outcomes"][oid]["label"],
@@ -338,7 +338,8 @@ def api_settlement(request: Request):
         "winner": s["winner"],
         "swimmer_take": s["swimmer_take"],
         "aggregate": s["aggregate"],
-        "markets": [{"market": m["market"], "name": m["name"], "won": m["won"], "void": m["void"]}
+        "markets": [{"market": m["market"], "name": m["name"], "won": m["won"],
+                     "won_label": m.get("won_label"), "void": m["void"]}
                     for m in s["markets"]],
     }
 

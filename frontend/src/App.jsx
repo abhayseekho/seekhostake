@@ -67,7 +67,7 @@ function Login({ authMode, testLogin, onNamed }) {
         <h1 className="text-2xl font-extrabold tracking-tight mb-1">
           Seekho<span className="text-gold">Stake</span>
         </h1>
-        <p className="text-dim mb-2">Khuseel vs Bansod · best of 3 · 16 Sept</p>
+        <p className="text-dim mb-2">Khuseel vs Bansod · Best of 3 · 16 Sept</p>
         <button onClick={() => setShowRules(true)} className="text-dim text-sm underline mb-6">📜 Read the rules</button>
         {showRules && <Rules onClose={() => setShowRules(false)} />}
         {authMode === "name" ? (
@@ -100,7 +100,7 @@ function Login({ authMode, testLogin, onNamed }) {
             </a>
             {testLogin && (showTest ? (
               <div className="space-y-2">
-                <input placeholder="test email (@seekhoapp.com)" value={tEmail}
+                <input placeholder="Test email (@seekhoapp.com)" value={tEmail}
                   onChange={(e) => setTEmail(e.target.value)}
                   className="w-full bg-bg border border-edge rounded-xl px-4 py-2 outline-none text-sm" />
                 <div className="flex gap-2">
@@ -204,7 +204,7 @@ function MarketCard({ market, picked, onPick, myBets }) {
   const my = market.my_bet, pend = market.my_pending;
   return (
     <div className="bg-card border border-edge rounded-2xl p-4">
-      <div className="flex justify-between items-baseline mb-3 gap-2">
+      <div className="flex justify-between items-baseline gap-2">
         <h2 className="font-bold text-sm">{market.name}</h2>
         <span className="text-[10px] font-bold tracking-[.1em] uppercase shrink-0">
           {market.open
@@ -212,6 +212,7 @@ function MarketCard({ market, picked, onPick, myBets }) {
             : <span className="text-faint">Closed</span>}
         </span>
       </div>
+      <p className="text-[11px] text-faint mb-3 mt-0.5 min-h-[14px]">{market.sub || ""}</p>
       <div className="grid grid-cols-2 gap-2">
         {market.outcomes.map((o) => {
           const sel = picked && picked.market === market.id && picked.outcome === o.id;
@@ -285,7 +286,7 @@ function BetSlip({ picked, refresh, onClear }) {
   return (
     <div className="bg-raise border border-edge rounded-2xl p-4 space-y-3 shadow-xl">
       <div className="flex justify-between items-center">
-        <h2 className="font-bold text-sm">Bet slip</h2>
+        <h2 className="text-[11px] font-bold tracking-[.13em] text-faint uppercase">Bet slip</h2>
         {picked && <button onClick={onClear} className="text-faint text-xs underline">Clear</button>}
       </div>
       {!picked ? (
@@ -344,7 +345,7 @@ function MyBets({ markets, refresh }) {
           <span>{r.m.name} · <b className={TONE_TEXT[tone(r.outcome)]}>{labelOf(r.m, r.outcome)}</b> {inr(r.amount)}</span>
           {r.status === "PENDING" ? (
             <span className="text-gold text-xs font-bold">
-              PENDING <button onClick={() => cancel(r.m.id)} className="text-bad underline font-normal ml-1">cancel</button>
+              PENDING <button onClick={() => cancel(r.m.id)} className="text-bad underline font-normal ml-1">Cancel</button>
             </span>
           ) : (
             <span className="text-khuseel text-xs font-bold">IN POOL</span>
@@ -418,7 +419,7 @@ function Settlement({ s, race }) {
         <div className="flex flex-wrap gap-2">
           {s.markets.map((m) => (
             <span key={m.market} className="bg-raise rounded-lg px-2.5 py-1 text-xs text-dim">
-              {m.name}: <b className="text-ink">{m.void ? "VOID (refunded)" : m.won}</b>
+              {m.name}: <b className="text-ink">{m.void ? "Void — refunded" : (m.won_label || m.won)}</b>
             </span>
           ))}
         </div>
@@ -586,10 +587,10 @@ function Admin({ state, refresh }) {
             )}
             <button onClick={() => act(() => post("/api/admin/side-seeds", { amount: 100 }))}
               className="rounded-xl px-3 py-2 text-xs font-bold border border-edge text-gold">
-              Liquidity ₹100/outcome (side markets)
+              Seed side-market odds · ₹100/outcome
             </button>
             <button onClick={() => act(() => post("/api/admin/side-seeds", { amount: 0 }))}
-              className="text-faint text-xs underline">Clear liquidity</button>
+              className="text-faint text-xs underline">Clear side liquidity</button>
           </div>
         </div>
       )}

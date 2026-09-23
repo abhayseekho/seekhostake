@@ -25,16 +25,21 @@ K_B = (("khuseel", "Khuseel"), ("bansod", "Bansod"))
 # Ordered market definitions. `open_phases` = when bets may be placed; every market is closed
 # for good once lap 2 starts (the global rule). `main` marks the swimmer-cut + house-seed market.
 MARKETS = (
-    {"id": "match",    "name": "Match Winner",   "outcomes": K_B, "open_phases": ("prerace", "break1"), "main": True},
+    {"id": "match",    "name": "Match Winner",   "outcomes": K_B, "open_phases": ("prerace", "break1"),
+     "main": True,     "sub": "Best of 3 · first to 2 laps"},
     {"id": "score",    "name": "Correct Score",  "outcomes": (("k20", "Khuseel 2–0"), ("k21", "Khuseel 2–1"),
                                                               ("b20", "Bansod 2–0"), ("b21", "Bansod 2–1")),
-     "open_phases": ("prerace", "break1")},
-    {"id": "distance", "name": "Goes to Lap 3?", "outcomes": YES_NO, "open_phases": ("prerace", "break1")},
-    {"id": "lap1",     "name": "Lap 1 Winner",   "outcomes": K_B, "open_phases": ("prerace",)},
-    {"id": "lap2",     "name": "Lap 2 Winner",   "outcomes": K_B, "open_phases": ("prerace", "break1")},
-    {"id": "lap3",     "name": "Lap 3 Winner",   "outcomes": K_B, "open_phases": ("prerace", "break1")},
-    {"id": "comeback", "name": "Comeback — lap-1 loser wins match", "outcomes": YES_NO,
-     "open_phases": ("break1",)},
+     "open_phases": ("prerace", "break1"), "sub": "Final lap score of the match"},
+    {"id": "distance", "name": "Goes to Lap 3?", "outcomes": YES_NO, "open_phases": ("prerace", "break1"),
+     "sub": "Does the match reach a decider?"},
+    {"id": "lap1",     "name": "Lap 1 Winner",   "outcomes": K_B, "open_phases": ("prerace",),
+     "sub": "Closes when lap 1 starts"},
+    {"id": "lap2",     "name": "Lap 2 Winner",   "outcomes": K_B, "open_phases": ("prerace", "break1"),
+     "sub": None},
+    {"id": "lap3",     "name": "Lap 3 Winner",   "outcomes": K_B, "open_phases": ("prerace", "break1"),
+     "sub": "Refunded if the match ends 2–0"},
+    {"id": "comeback", "name": "Comeback Special", "outcomes": YES_NO, "open_phases": ("break1",),
+     "sub": "Lap-1 loser wins the match?"},
 )
 MARKET_IDS = tuple(m["id"] for m in MARKETS)
 MARKET_BY_ID = {m["id"]: m for m in MARKETS}
@@ -170,11 +175,12 @@ def settle_market(market_id, approved_bets, laps):
     won = winning_outcome(market_id, laps)
     rows, house, swimmer = [], 0, 0
 
+    labels = dict(m["outcomes"])
     if won is None:  # void → full refund, no rake
         for b in approved_bets:
             rows.append({**_row(b), "payout": int(b["amount"]), "result": "void"})
-        return {"market": market_id, "name": m["name"], "won": None, "void": True,
-                "pool": pool, "house": 0, "swimmer": 0, "rows": _net(rows)}
+        return {"market": market_id, "name": m["name"], "won": None, "won_label": None,
+                "void": True, "pool": pool, "house": 0, "swimmer": 0, "rows": _net(rows)}
 
     win_total = sum(int(b["amount"]) for b in approved_bets if b["outcome"] == won)
     lose_total = pool - win_total
@@ -188,8 +194,8 @@ def settle_market(market_id, approved_bets, laps):
             paid += payout
             rows.append({**_row(b), "payout": payout, "result": "refund"})
         house = pool - paid
-        return {"market": market_id, "name": m["name"], "won": won, "void": False,
-                "pool": pool, "house": house, "swimmer": 0, "rows": _net(rows)}
+        return {"market": market_id, "name": m["name"], "won": won, "won_label": labels[won],
+                "void": False, "pool": pool, "house": house, "swimmer": 0, "rows": _net(rows)}
 
     if m.get("main"):
         distributable = lose_total - rake          # losers fund rake first
@@ -212,8 +218,8 @@ def settle_market(market_id, approved_bets, laps):
 
     house = pool - paid - swimmer  # rake + rounding remainders (+/- house seed rows are in `rows`)
     assert house >= 0 and paid + swimmer + house == pool, f"{market_id}: settlement must sum to pool"
-    return {"market": market_id, "name": m["name"], "won": won, "void": False,
-            "pool": pool, "house": house, "swimmer": swimmer, "rows": _net(rows)}
+    return {"market": market_id, "name": m["name"], "won": won, "won_label": labels[won],
+            "void": False, "pool": pool, "house": house, "swimmer": swimmer, "rows": _net(rows)}
 
 
 def settle_all(bets_by_market, laps):

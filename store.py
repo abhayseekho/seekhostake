@@ -224,6 +224,17 @@ def house_seed(market="match"):
     return current_approved("house", market)
 
 
+def seed_side_markets(markets_outcomes, amount, admin_email):
+    """Symmetric house liquidity on every side-market outcome (amount=0 clears) so boards open
+    with real odds instead of '—'. One row per outcome, keyed 'house:<market>:<outcome>'."""
+    n = 0
+    for mid, oid in markets_outcomes:
+        _replace_bet(f"house:{mid}:{oid}", "House", mid, oid, amount, "house",
+                     "house liquidity", admin_email)
+        n += 1
+    return n
+
+
 def reset_book(rows, admin_email):
     """Pre-race only (enforced at the API): wipe ALL bets and reload the seed."""
     with engine.begin() as cx:

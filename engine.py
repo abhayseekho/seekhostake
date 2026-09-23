@@ -229,7 +229,7 @@ def settle_all(bets_by_market, laps):
     house_from_seed = 0
     for res in markets:
         for r in res["rows"]:
-            if r["key"] == "house":
+            if r["key"].startswith("house"):  # 'house' (match seed) or 'house:<market>:<outcome>'
                 house_from_seed += r["net"]
                 continue
             p = people.setdefault(r["key"], {"key": r["key"], "display_name": r["display_name"],
@@ -243,7 +243,8 @@ def settle_all(bets_by_market, laps):
 
     total_pool = sum(res["pool"] for res in markets)
     paid_people = sum(p["payout"] for p in aggregate)
-    seed_stake = sum(r["stake"] for res in markets for r in res["rows"] if r["key"] == "house")
+    seed_stake = sum(r["stake"] for res in markets for r in res["rows"]
+                     if r["key"].startswith("house"))
     # humans put in (total_pool - seed_stake); every rupee of it goes to people, swimmer, or the
     # organiser's net take (rakes + seed result) — the organiser can never leak or absorb extra.
     assert paid_people + swimmer_total + house_total == total_pool - seed_stake

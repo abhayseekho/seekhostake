@@ -251,8 +251,8 @@ def api_state(request: Request):
                 shown_totals[oid] = (o["total"], o["bettors"])
             else:
                 house_amt = sum(int(b["amount"]) for b in rows
-                                if b["key"] == "house" and b["outcome"] == oid)
-                house_n = sum(1 for b in rows if b["key"] == "house" and b["outcome"] == oid)
+                                if b["key"].startswith("house") and b["outcome"] == oid)
+                house_n = sum(1 for b in rows if b["key"].startswith("house") and b["outcome"] == oid)
                 shown_totals[oid] = (o["total"] - house_amt, o["bettors"] - house_n)
         my = mine_all.get(mid)
         pend = my_pendings.get(mid)
@@ -280,12 +280,12 @@ def api_state(request: Request):
         "markets": markets,
         "bets": sorted(({"key": b["key"], "display_name": b["display_name"],
                          "side": b["outcome"], "amount": b["amount"]}
-                        for b in match_rows if owner or b["key"] != "house"),
+                        for b in match_rows if owner or not b["key"].startswith("house")),
                        key=lambda b: -b["amount"]),
         "settled": store.load_settlement() is not None,
     }
     if owner:
-        human_pool = sum(b["amount"] for b in match_rows if b["key"] != "house")
+        human_pool = sum(b["amount"] for b in match_rows if not b["key"].startswith("house"))
         seed = store.house_seed()
         out["rake_pct"] = int(rules.HOUSE_RAKE * 100)
         out["pending_count"] = len(store.pending_bets())
@@ -429,12 +429,31 @@ def api_house_seed(request: Request, body: HouseSeed):
         raise HTTPException(400, "already_settled")
     if store.get_race()["phase"] not in rules.OPEN_PHASES:
         raise HTTPException(400, "book_closed")
-    human_pool = sum(b["amount"] for b in store.approved_bets("match") if b["key"] != "house")
+    human_pool = sum(b["amount"] for b in store.approved_bets("match") if not b["key"].startswith("house"))
     cap = rules.max_house_seed(human_pool)
     if body.amount > cap:
         raise HTTPException(400, f"seed_exceeds_rake_cap:{cap}")
     store.set_house_seed("match", body.outcome, body.amount, u["key"])
     return {"ok": True, "cap": cap}
+
+
+class SideSeeds(BaseModel):
+    amount: int  # per outcome; 0 clears all side-market liquidity
+
+
+@app.post("/api/admin/side-seeds")
+def api_side_seeds(request: Request, body: SideSeeds):
+    """Symmetric house liquidity on every side-market outcome so boards show odds from the
+    first second. Symmetric = near-neutral: worst-case exposure ≈ one seed per market."""
+    u = _require_owner(request)
+    if body.amount < 0 or body.amount > 1000:
+        raise HTTPException(400, "bad_amount")
+    if store.load_settlement() is not None:
+        raise HTTPException(400, "already_settled")
+    pairs = [(m["id"], oid) for m in rules.MARKETS if not m.get("main")
+             for oid, _ in m["outcomes"]]
+    n = store.seed_side_markets(pairs, body.amount, u["key"])
+    return {"ok": True, "outcomes_seeded": n, "per_outcome": body.amount}
 
 
 class VoidBet(BaseModel):

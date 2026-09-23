@@ -306,12 +306,16 @@ function BetSlip({ picked, refresh, onClear }) {
                 {v >= 1000 ? v / 1000 + "k" : v}</button>
             ))}
           </div>
-          {amt > 0 && picked.est && (
+          {amt > 0 && (picked.est ? (
             <div className="flex justify-between text-xs text-dim px-0.5">
               <span>Indicative payout</span>
               <b className="text-ink text-sm">{inr(Math.floor(amt * picked.est))}</b>
             </div>
-          )}
+          ) : (
+            <p className="text-[11px] text-faint px-0.5">
+              First bet on this outcome — odds appear as money comes in.
+            </p>
+          ))}
           <button disabled={amt < 1} onClick={submit}
             className={`w-full font-extrabold rounded-xl py-3.5 ${amt >= 1 ? "bg-khuseel text-bg" : "bg-card text-faint"}`}>
             {amt >= 1 ? `Bet ${inr(amt)} on ${picked.label}` : "Enter amount"}
@@ -580,6 +584,12 @@ function Admin({ state, refresh }) {
               <button onClick={() => act(() => post("/api/admin/house-seed", { outcome: house.seed.outcome, amount: 0 }))}
                 className="text-bad text-xs underline">Remove seed</button>
             )}
+            <button onClick={() => act(() => post("/api/admin/side-seeds", { amount: 100 }))}
+              className="rounded-xl px-3 py-2 text-xs font-bold border border-edge text-gold">
+              Liquidity ₹100/outcome (side markets)
+            </button>
+            <button onClick={() => act(() => post("/api/admin/side-seeds", { amount: 0 }))}
+              className="text-faint text-xs underline">Clear liquidity</button>
           </div>
         </div>
       )}

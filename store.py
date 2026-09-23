@@ -224,11 +224,11 @@ def house_seed(market="match"):
     return current_approved("house", market)
 
 
-def seed_side_markets(markets_outcomes, amount, admin_email):
-    """Symmetric house liquidity on every side-market outcome (amount=0 clears) so boards open
-    with real odds instead of '—'. One row per outcome, keyed 'house:<market>:<outcome>'."""
+def seed_side_markets(rows, admin_email):
+    """House liquidity on side-market outcomes: rows = [(market, outcome, amount)], amount=0
+    clears that outcome. One row per outcome, keyed 'house:<market>:<outcome>'."""
     n = 0
-    for mid, oid in markets_outcomes:
+    for mid, oid, amount in rows:
         _replace_bet(f"house:{mid}:{oid}", "House", mid, oid, amount, "house",
                      "house liquidity", admin_email)
         n += 1

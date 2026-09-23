@@ -264,6 +264,24 @@ def max_house_seed(match_pool_human):
     return int(HOUSE_RAKE * match_pool_human)
 
 
+BANSOD_PRIOR = 0.60  # organiser's estimate that Bansod wins any given lap (skill edge)
+
+
+def outcome_priors(market_id, p=BANSOD_PRIOR):
+    """Opening probabilities per outcome under an i.i.d. per-lap win prob p for Bansod.
+    Used to tilt house liquidity so boards open at informed odds instead of even money."""
+    q = 1 - p
+    if market_id in ("lap1", "lap2", "lap3"):
+        return {"khuseel": q, "bansod": p}
+    if market_id == "score":
+        return {"k20": q * q, "k21": 2 * p * q * q, "b20": p * p, "b21": 2 * p * p * q}
+    if market_id == "distance":
+        return {"yes": 2 * p * q, "no": p * p + q * q}
+    if market_id == "comeback":
+        return {"yes": p * q, "no": 1 - p * q}
+    raise ValueError(market_id)
+
+
 def _row(b):
     return {"key": b["key"], "display_name": b["display_name"],
             "outcome": b["outcome"], "stake": int(b["amount"])}

@@ -441,22 +441,36 @@ def api_house_seed(request: Request, body: HouseSeed):
 
 
 class SideSeeds(BaseModel):
-    amount: int  # per outcome; 0 clears all side-market liquidity
+    per_market: int = 200  # total house liquidity per market; 0 clears
+    tilt: bool = True      # split by outcome priors (Bansod skill edge) vs evenly
 
 
 @app.post("/api/admin/side-seeds")
 def api_side_seeds(request: Request, body: SideSeeds):
-    """Symmetric house liquidity on every side-market outcome so boards show odds from the
-    first second. Symmetric = near-neutral: worst-case exposure ≈ one seed per market."""
+    """House liquidity on every side-market outcome so boards open with informed odds.
+    tilt=true splits each market's liquidity by outcome priors (BANSOD_PRIOR), so likelier
+    outcomes open short and long shots open attractive."""
     u = _require_owner(request)
-    if body.amount < 0 or body.amount > 1000:
+    if body.per_market < 0 or body.per_market > 2000:
         raise HTTPException(400, "bad_amount")
     if store.load_settlement() is not None:
         raise HTTPException(400, "already_settled")
-    pairs = [(m["id"], oid) for m in rules.MARKETS if not m.get("main")
-             for oid, _ in m["outcomes"]]
-    n = store.seed_side_markets(pairs, body.amount, u["key"])
-    return {"ok": True, "outcomes_seeded": n, "per_outcome": body.amount}
+    rows = []
+    for m in rules.MARKETS:
+        if m.get("main"):
+            continue
+        oids = [oid for oid, _ in m["outcomes"]]
+        if body.per_market == 0:
+            rows += [(m["id"], oid, 0) for oid in oids]
+            continue
+        if body.tilt:
+            pri = rules.outcome_priors(m["id"])
+            amts = {oid: max(10, int(round(pri[oid] * body.per_market / 10) * 10)) for oid in oids}
+        else:
+            amts = {oid: body.per_market // len(oids) for oid in oids}
+        rows += [(m["id"], oid, amts[oid]) for oid in oids]
+    n = store.seed_side_markets(rows, u["key"])
+    return {"ok": True, "outcomes_seeded": n, "per_market": body.per_market, "tilt": body.tilt}
 
 
 class VoidBet(BaseModel):

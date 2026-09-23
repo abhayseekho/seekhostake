@@ -67,7 +67,7 @@ function Login({ authMode, testLogin, onNamed }) {
         <h1 className="text-2xl font-extrabold tracking-tight mb-1">
           Seekho<span className="text-gold">Stake</span>
         </h1>
-        <p className="text-dim mb-2">Khuseel vs Bansod · Best of 3 · 16 Sept</p>
+        <p className="text-dim mb-2">Khuseel vs Bansod · Best of 3 · 27 Sept</p>
         <button onClick={() => setShowRules(true)} className="text-dim text-sm underline mb-6">Rules</button>
         {showRules && <Rules onClose={() => setShowRules(false)} />}
         {authMode === "name" ? (
@@ -585,11 +585,11 @@ function Admin({ state, refresh }) {
               <button onClick={() => act(() => post("/api/admin/house-seed", { outcome: house.seed.outcome, amount: 0 }))}
                 className="text-bad text-xs underline">Remove seed</button>
             )}
-            <button onClick={() => act(() => post("/api/admin/side-seeds", { amount: 100 }))}
+            <button onClick={() => act(() => post("/api/admin/side-seeds", { per_market: 200, tilt: true }))}
               className="rounded-xl px-3 py-2 text-xs font-bold border border-edge text-gold">
-              Seed side-market odds · ₹100/outcome
+              Seed side odds · ₹200/market · Bansod-tilted
             </button>
-            <button onClick={() => act(() => post("/api/admin/side-seeds", { amount: 0 }))}
+            <button onClick={() => act(() => post("/api/admin/side-seeds", { per_market: 0 }))}
               className="text-faint text-xs underline">Clear side liquidity</button>
           </div>
         </div>

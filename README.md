@@ -1,6 +1,6 @@
 # Swim Bet — Khuseel vs Bansod live betting portal
 
-Parimutuel pool for the 16 Sept office swim race (best of 3 × 25m). Cash-first: a bet enters the
+Parimutuel pool for the 27 Sept office swim race (best of 3 × 25m). Cash-first: a bet enters the
 pool only after the admin (cashier) confirms cash received. Organiser is net-zero by construction —
 settlement asserts payouts sum exactly to the pool.
 

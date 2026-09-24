@@ -865,11 +865,28 @@ export default function App() {
     // Push-based sync: the server pings this stream the instant any bet, approval, lap result,
     // or settlement happens, so every open tab updates within one round trip — no polling wait.
     const es = new EventSource("/api/stream");
-    es.onopen = () => setLive(true);
+    // onopen fires on the FIRST connect and on every auto-reconnect. Without an immediate refresh
+    // here, a tab that reconnects after any gap (see below) sits on whatever it last saw until
+    // the next mutation happens to occur — e.g. someone's bet gets rejected while their phone was
+    // locked, the stream reconnects the instant they unlock it, but the odds stay stale until
+    // another bettor does something elsewhere. This is very likely the actual "odds don't update"
+    // symptom on a phone, since screen-lock/backgrounding is routine mid-race.
+    es.onopen = () => { setLive(true); refresh(); };
     es.onerror = () => setLive(false);  // EventSource retries on its own; flips back on reconnect
     es.onmessage = refresh;
     const fallback = setInterval(refresh, 15000);  // safety net if a stream silently drops
-    return () => { es.close(); clearInterval(fallback); };
+    // Mobile browsers throttle/pause timers and can delay SSE delivery for a backgrounded tab —
+    // both the interval above and the stream itself can sit stale for longer than expected while
+    // locked. Force a fetch the instant the tab is foregrounded again, instead of waiting on
+    // whichever of those two happens to fire next.
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", refresh);
+    return () => {
+      es.close(); clearInterval(fallback);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", refresh);
+    };
   }, [refresh]);
 
   if (unauth) return <Login authMode={authMode} testLogin={testLogin} deadlineLabel={deadlineLabel} onNamed={refresh} />;

@@ -33,7 +33,9 @@ None of the above required a database migration beyond the one already in flight
 - **R-14 (`/docs`/`/openapi.json` unauthenticated) — RESOLVED.** `docs_url`/`redoc_url`/`openapi_url` all `None` unless `SWIMBET_DEV=1`. Verified both ways (DEV: reachable; prod-mode env: all three `None`) before landing.
 - **R-3 addendum — approve-time constraint violation now handled cleanly.** The `one_approved_per_person_market` DB index from the prior pass had no corresponding application-level handling — a hit would have surfaced as a raw 500. `api_approve` now catches `IntegrityError` specifically and returns `409 already_approved`. Should be unreachable given `_approve_lock`; this is the "belt" to the lock's "suspenders," not a new mitigation layer on its own.
 
-**Update — 24 Sept 2026, fourth pass: `SLACK_WEBHOOK_URL` set and verified live.** Confirmed directly against Railway (`railway variable list`) and by reading `#seekhostake-alerts` back via the Slack API — the test post from webhook setup is actually sitting in the channel, not just accepted with a 200. All three triggers above are now live, not log-only. See `docs/release-checklist.md` for the remaining pre-Sunday action plan (external `/healthz` monitor, R-4 second admin) this pass produced.
+**Update — 24 Sept 2026, fourth pass: `SLACK_WEBHOOK_URL` set and verified live.** Confirmed directly against Railway (`railway variable list`) and by reading `#seekhostake-alerts` back via the Slack API — the test post from webhook setup is actually sitting in the channel, not just accepted with a 200. All three triggers above are now live, not log-only. See `docs/release-checklist.md` for the remaining pre-Sunday action plan (R-4 second admin) this pass produced.
+
+**Update — same pass, continued: the process-death gap is now substantially closed too, via a different mechanism than originally planned.** Rather than a third-party uptime monitor pinging `/healthz` (still a reasonable belt-and-suspenders addition, but no longer the primary fix), a **Railway project webhook** was configured (dashboard → Project Settings → Webhooks) for `Deployment Crashed`, `Deployment Oom Killed`, `Monitor Triggered`, and `VolumeAlert Triggered`, posting to the same `#seekhostake-alerts` channel via the same webhook URL. This fires from Railway's platform layer, not the app process — so it survives exactly the failure mode (`_alert_slack`'s in-process triggers dying with the process) that was the last open piece of this risk. Verified via Railway's own "Test Webhook" (response 200) and by reading the resulting formatted message back from the channel. Configuration lives in the Railway dashboard, not source control — this entry is the only record of it, so don't assume a repo search will find it.
 
 ---
 
@@ -51,7 +53,7 @@ None of the above required a database migration beyond the one already in flight
 | R-8 | Technical | In-memory SSE subscriber set breaks under >1 process/instance | Medium (N/A at current scale) | Documented; single-instance today | P3 (P0 if scaled horizontally) |
 | R-9 | Security | Test-login auth-bypass code path (`/auth/test`) still exists in source, currently dormant | Medium | `TEST_LOGIN_PASSWORD` env var confirmed empty (404s) | P2 |
 | R-10 | Technical | No idempotency key on `POST /api/bets` — retry/double-submit risk | Medium | UI disables button after submit (not server-enforced) | P1 |
-| R-11 | Operational | Automated alerting exists for suspend/error/stuck-suspended, but nothing external notices if the process itself dies | Medium | Slack alerting live (3 triggers, verified) | P2 |
+| R-11 | Operational | Automated alerting live for suspend/error/stuck-suspended/process-crash; only settlement-anomaly detection remains unbuilt | Low | Slack alerting (3 triggers) + Railway crash/OOM webhook, both verified | P3 |
 | R-12 | Technical | Singleton schema (`race.id=1`, `settlements.id=1`) blocks a second event and has no isolation if ever violated | Medium | None — architectural | P1 |
 | R-13 | Compliance | No data retention / deletion policy stated anywhere | Low | Minimal PII footprint reduces impact | P2 |
 | R-14 | Security | OpenAPI docs (`/docs`, `/openapi.json`) reachable unauthenticated in production | Low-Medium | None | P2 |
@@ -138,17 +140,17 @@ None of the above required a database migration beyond the one already in flight
 
 ---
 
-### R-11 — Automated alerting exists, process-liveness monitoring doesn't (Medium, P2)
+### R-11 — Automated alerting: in-process done, process-death done via Railway, settlement-anomaly still open (Low, P3)
 
-**Description.** Originally: every incident was caught by a human noticing, not a system signal. **Now resolved for the in-process case:** `_alert_slack()` fires to `#seekhostake-alerts` on market auto-suspend (instant), any unhandled exception (5-min dedup/endpoint), and a market that stays suspended (15-min nudge) — verified live 24 Sept by reading the channel back via the Slack API, not just trusting the webhook's 200. **What remains:** all three triggers run inside the one uvicorn process — if it dies outright (OOM, crash, Railway restart hang) rather than throwing a handled exception, nothing fires, because the alerting code dies with it. A settlement anomaly with no suspension event also has no dedicated check.
+**Description.** Originally: every incident was caught by a human noticing, not a system signal. **Resolved for the in-process case:** `_alert_slack()` fires to `#seekhostake-alerts` on market auto-suspend (instant), any unhandled exception (5-min dedup/endpoint), and a market that stays suspended (15-min nudge) — verified live 24 Sept by reading the channel back via the Slack API, not just trusting the webhook's 200. **Resolved for the process-death case, by a different mechanism than first planned:** rather than a third-party uptime monitor, a Railway project webhook (`Deployment Crashed` / `Deployment Oom Killed` / `Monitor Triggered` / `VolumeAlert Triggered`) posts to the same channel, firing from Railway's platform layer so it survives the app process dying — verified via Railway's "Test Webhook" plus reading the resulting message back from the channel. **What remains:** a settlement anomaly with no suspension event has no dedicated check.
 
-**Impact if it materializes.** The process-death gap: total silence during an outage, same as before this pass, just narrowed to that one failure mode. The settlement-anomaly gap: a bad settlement could go unnoticed post-race (lower urgency — race is one-shot, reconciliation happens right after per the runbook, not hours later).
+**Impact if it materializes.** Only the settlement-anomaly gap remains: a bad settlement could go unnoticed post-race — lower urgency, since race is one-shot and reconciliation happens right after per the runbook, not hours later.
 
-**Current mitigation.** Slack alerting live for the three in-process triggers above (see Update, 24 Sept fourth pass).
+**Current mitigation.** Slack alerting live for all three in-process triggers, plus the Railway-native crash/OOM webhook. Only genuinely open item is settlement-anomaly detection.
 
-**Recommended action.** External uptime monitor (UptimeRobot or Railway's own alerting) polling `/healthz` — the process-death case can only be closed from outside the process itself. ~5 minutes to set up, doesn't require a code change. See `docs/release-checklist.md` for the full prioritized list this pass produced, including why the settlement-anomaly check is lower priority than it looks (race is one-shot, not a recurring exposure window).
+**Recommended action.** Nothing urgent before Sunday. If ever prioritized: a dedicated settlement-anomaly check (e.g. re-verify payouts sum to pool exactly, post-settlement, as a belt-and-suspenders on top of the existing in-code assertion). See `docs/release-checklist.md` for why this is explicitly deferred, not forgotten.
 
-**Owner.** Engineering (uptime monitor setup) / Abhay (Railway or UptimeRobot account access).
+**Owner.** Engineering, next event (no near-term action needed).
 
 ---
 

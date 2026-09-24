@@ -74,6 +74,7 @@ If the bad commit already caused data corruption (not just a code bug), a code r
   2. Any unhandled server exception, anywhere — a global FastAPI exception handler, deduped per-endpoint-path to one alert per 5 minutes so a repeatedly-failing endpoint pings once, not on every request.
   3. A market that's *stayed* suspended — the one case that genuinely needs polling, since nothing else re-triggers on it: a background thread checks every 2 minutes and nudges Slack at most once per 15 minutes per still-suspended set.
   All three no-op to log-only (no exception, no crash) if `SLACK_WEBHOOK_URL` isn't set — safe to have shipped ahead of the webhook existing.
+- **Railway project webhook (dashboard config, not source — check Project Settings → Webhooks, not the repo):** `Deployment Crashed`, `Deployment Oom Killed`, `Monitor Triggered`, `VolumeAlert Triggered` → same `#seekhostake-alerts` channel, same webhook URL. Fires from Railway's platform layer, so it's the one alert that survives the app process dying outright — the specific case the three in-process triggers above can't cover. Verified via Railway's "Test Webhook" button (response 200) and by reading the resulting message back from the channel.
 - Targeted application logs (`logging`, stdout — see Railway's raw logs) at safety-critical events: circuit-breaker suspend/clear, manual suspend/resume, settlement, arbitrage rejection at approve-time, rate-limit trips, failed admin-password attempts. Not a general access log — still no per-request structured logging (§14's fuller recommendation is still open).
 - Manually fetching `/api/state` as admin and reading `house.floor`, `pending_count`, and each market's `suspended` flag.
 - A human watching the live site.
@@ -94,7 +95,7 @@ Then, as an authenticated admin (via the app, not curl, since it needs a session
 - `house.floor` should be `>= 0`. If negative, see the incident playbook below immediately.
 - No market should show `suspended: true` for longer than the admin intends — a forgotten suspended market silently blocks all bets on it.
 
-**Remaining gap (P2, downgraded from P1 now that the above is live):** nothing external watches `/healthz` itself yet — if the process dies outright rather than throwing a handled exception, none of the three Slack triggers above fire, since they all run inside the same process. An external uptime monitor (UptimeRobot or Railway's own alerting, pointed at `/healthz`) closes that specific gap and is a five-minute setup whenever it's prioritized.
+**Remaining gap (P3, downgraded from P2 now that the Railway webhook above is live):** the Railway webhook covers crash and OOM-kill specifically. A fully independent third-party uptime monitor (UptimeRobot etc.) polling `/healthz` would be a genuinely separate signal — not dependent on Railway's own platform being healthy — but is now a belt-and-suspenders nice-to-have rather than the primary gap it was before this pass.
 
 ---
 

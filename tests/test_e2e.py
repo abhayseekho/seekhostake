@@ -744,3 +744,65 @@ def test_healthz_ok():
     c = TestClient(api.app)
     r = c.get("/healthz")
     assert r.status_code == 200 and r.json() == {"ok": True}
+
+
+# ── pending-request cascade effects on OTHER bettors' displayed odds ────────────────────────────
+
+def test_pending_raise_does_not_double_count_in_displayed_pool():
+    """Regression: while a raise sits pending, the bettor's still-approved old amount and new
+    pending amount were both being summed into the displayed pool (api_state) — the old row isn't
+    superseded until the raise is actually APPROVED, but api_state was counting both the whole
+    time it sat in the queue. Overstated the pool by the old amount for as long as the admin took
+    to act — misleading every other bettor watching the board in that window, on top of whatever
+    genuine indicative-odds movement the raise itself caused."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice = user_client("Alice")
+    alice.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 1000})
+    approve_all_pending(admin)
+    pool_before_raise = match_pool(admin)
+
+    alice.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 2500})
+    pool_during_pending_raise = match_pool(admin)  # raise NOT yet approved
+    assert pool_during_pending_raise - pool_before_raise == 1500  # delta only, not +2500 on top
+
+
+def test_pending_side_switch_does_not_double_count_either_outcome():
+    """Same mechanism, pre-race side-switch: while the switch sits pending, the old approved
+    Khuseel row and the new pending Bansod row must not BOTH count toward the pool — there is
+    only ever one live position per person per market, and the display must reflect that even
+    before the admin has acted on the switch."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice = user_client("Alice")
+    alice.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 800})
+    approve_all_pending(admin)
+    pool_before_switch = match_pool(admin)
+
+    alice.post("/api/bets", json={"market": "match", "outcome": "bansod", "amount": 800})
+    pool_during_pending_switch = match_pool(admin)  # switch NOT yet approved
+    # same amount, just pending on the other side now -- not counted on both sides at once
+    assert pool_during_pending_switch == pool_before_switch
+
+
+def test_approve_reports_not_pending_if_bet_resolved_between_checks(monkeypatch):
+    """Regression: api_approve's top-level pending-check and store.approve_bet's own internal
+    re-check are two separate reads inside the same locked section. If the bet stops being
+    'pending' in the gap between them (e.g. the bettor cancels in that exact window),
+    store.approve_bet returns None without raising — api_approve must notice and report
+    not_pending, not silently fall through to {"ok": True} on an approval that never actually
+    happened (before/after would read the identical unchanged book, so the swing check alone
+    would never catch this either). The real race needs sub-millisecond thread interleaving
+    inside one locked section, not reliably triggerable over HTTP — simulated directly by
+    stubbing store.approve_bet to return None, exactly as it would on a bet resolved out from
+    under it."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice = user_client("Alice")
+    alice.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 500})
+    bet_id = admin.get("/api/admin/pending").json()["pending"][0]["id"]
+
+    monkeypatch.setattr(store, "approve_bet", lambda *a, **k: None)
+    r = admin.post(f"/api/admin/bets/{bet_id}/approve")
+    assert r.status_code == 404 and r.json()["detail"] == "not_pending"
+    assert store.bet_by_id(bet_id)["status"] == "pending"  # untouched, not falsely approved

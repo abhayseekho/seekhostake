@@ -493,7 +493,17 @@ def api_state(request: Request, as_user: bool = False):
         mid = m["id"]
         # Displayed (indicative) odds include pending requests so the market reflects demand the
         # moment it's submitted; settlement always uses approved cash only.
-        rows = by_market.get(mid, []) + pending_by_market.get(mid, [])
+        #
+        # A bettor's pending request (a raise, or a pre-race side-switch) represents their CURRENT
+        # intent and will supersede their existing approved row in this market if/when it's
+        # approved — so while it's pending, count only the pending amount here, not both. Without
+        # this exclusion the display double-counts them (old approved + new pending) for as long
+        # as the request sits in the queue: e.g. an approved ₹1,000 bet raised to ₹2,500 would
+        # show the pool as +₹3,500, not the correct +₹2,500, until the admin acts on it.
+        pending_here = pending_by_market.get(mid, [])
+        pending_keys_here = {p["key"] for p in pending_here}
+        approved_here = [b for b in by_market.get(mid, []) if b["key"] not in pending_keys_here]
+        rows = approved_here + pending_here
         book = rules.market_book(mid, rows)
         # Bettors see quoted odds only — the house position is priced into est_mult but never
         # itemized for them: displayed totals/pool exclude house rows for non-admins.
@@ -669,7 +679,7 @@ def api_approve(request: Request, bet_id: int):
         # background loop would only add latency for a number we already have in hand.
         before = rules.market_book(p["market"], store.approved_bets(p["market"]))
         try:
-            store.approve_bet(bet_id, u["key"])
+            approved = store.approve_bet(bet_id, u["key"])
         except IntegrityError:
             # Belt-and-suspenders: the one_approved_per_person_market DB index (store.init) is the
             # last line of defense if _approve_lock is ever bypassed or a second process exists —
@@ -677,6 +687,13 @@ def api_approve(request: Request, bet_id: int):
             log.error("approve_bet hit one_approved_per_person_market constraint: bet_id=%s key=%s market=%s",
                       bet_id, p["key"], p["market"])
             raise HTTPException(409, "already_approved")
+        if approved is None:
+            # store.approve_bet's own fresh check found the row no longer 'pending' — the bettor
+            # cancelled (or it was otherwise resolved) in the narrow window between this handler's
+            # top-level check and approve_bet's internal one. Nothing was approved; report that
+            # honestly instead of falling through to a false {"ok": True} (before/after would both
+            # read the unchanged book, so the swing check alone would never have caught this).
+            raise HTTPException(404, "not_pending")
         after = rules.market_book(p["market"], store.approved_bets(p["market"]))
         swing_ratio, swing_outcome = rules.odds_swing(p["market"], before, after, laps=r["laps"])
         suspended_now = False

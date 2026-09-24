@@ -180,3 +180,38 @@ def test_phase_machine_best_of_3():
         engine.next_phase_on_start_lap("lap1")
     with pytest.raises(ValueError):
         engine.next_phase_on_lap_result("break1", laps)
+
+
+def test_odds_swing_flags_thin_market_moves():
+    # Thin market: house seed only ₹80/₹120. One ₹500 bet on khuseel should swing bansod's
+    # multiplier by several times — exactly the real production scenario this guards against.
+    seed = _mk([("khuseel", 80), ("bansod", 120)])
+    before = engine.market_book("lap1", seed)
+    after = engine.market_book("lap1", seed + _mk([("khuseel", 500)]))
+    ratio, oid = engine.odds_swing(before, after)
+    assert ratio > engine.VOLATILITY_SUSPEND_RATIO
+    assert oid == "bansod"  # bansod's price is what moved (khuseel's own side barely changes)
+
+
+def test_odds_swing_ignores_normal_growth():
+    # A deep market (like the real match book) absorbs a normal-sized bet without tripping.
+    seed = _mk([("khuseel", 28050), ("bansod", 32000)])
+    before = engine.market_book("match", seed)
+    after = engine.market_book("match", seed + _mk([("khuseel", 500)]))
+    ratio, _ = engine.odds_swing(before, after)
+    assert ratio < engine.VOLATILITY_SUSPEND_RATIO
+
+
+def test_odds_swing_no_prior_price_is_not_volatility():
+    # First-ever bet on a previously dead/untouched outcome has nothing to compare against —
+    # that's demand showing up, not a "swing", so it must not trip the breaker.
+    before = engine.market_book("distance", [])
+    after = engine.market_book("distance", _mk([("yes", 500)]))
+    ratio, oid = engine.odds_swing(before, after)
+    assert ratio == 1.0 and oid is None
+
+
+def test_can_submit_respects_suspension():
+    assert engine.can_submit("lap1", "prerace", "khuseel", 100, suspended=True) == \
+        (False, "market_suspended")
+    assert engine.can_submit("lap1", "prerace", "khuseel", 100, suspended=False)[0]

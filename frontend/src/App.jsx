@@ -34,6 +34,7 @@ const REASON_TEXT = {
   outcome_dead: "This outcome is no longer possible.",
   not_pending: "This request was already handled.",
   arbitrage_bet: "This combination would guarantee you a profit regardless of outcome. One of your bets must carry risk.",
+  market_suspended: "This market is paused for review after an unusual odds swing. Check with the organiser.",
 };
 
 // ── login ────────────────────────────────────────────────────────────────────────────────────────
@@ -174,7 +175,13 @@ function OddsBoard({ market, picked, onPick }) {
   }, [market]);
 
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="space-y-2">
+      {market.suspended && (
+        <p className="text-xs text-gold bg-gold/10 border border-gold/40 rounded-xl px-3 py-2">
+          Suspended for review after an unusual odds swing — new bets are paused until the organiser resumes it.
+        </p>
+      )}
+      <div className="grid grid-cols-2 gap-3">
       {market.outcomes.map((o) => {
         const sel = picked && picked.market === market.id && picked.outcome === o.id;
         return (
@@ -196,6 +203,7 @@ function OddsBoard({ market, picked, onPick }) {
           </button>
         );
       })}
+      </div>
     </div>
   );
 }
@@ -204,16 +212,20 @@ function OddsBoard({ market, picked, onPick }) {
 function MarketCard({ market, picked, onPick, myBets }) {
   const my = market.my_bet, pend = market.my_pending;
   return (
-    <div className="bg-card border border-edge rounded-2xl p-4">
+    <div className={`bg-card border rounded-2xl p-4 ${market.suspended ? "border-gold/50" : "border-edge"}`}>
       <div className="flex justify-between items-baseline gap-2">
         <h2 className="font-bold text-sm">{market.name}</h2>
         <span className="text-[10px] font-bold tracking-[.1em] uppercase shrink-0">
-          {market.open
-            ? <span className="text-khuseel">Open</span>
-            : <span className="text-faint">Closed</span>}
+          {market.suspended
+            ? <span className="text-gold">Suspended</span>
+            : market.open
+              ? <span className="text-khuseel">Open</span>
+              : <span className="text-faint">Closed</span>}
         </span>
       </div>
-      <p className="text-[11px] text-faint mb-3 mt-0.5 min-h-[14px]">{market.sub || ""}</p>
+      <p className="text-[11px] text-faint mb-3 mt-0.5 min-h-[14px]">
+        {market.suspended ? "Paused for review after an unusual odds swing." : (market.sub || "")}
+      </p>
       <div className="grid grid-cols-2 gap-2">
         {market.outcomes.map((o) => {
           const sel = picked && picked.market === market.id && picked.outcome === o.id;
@@ -493,10 +505,42 @@ function Admin({ state, refresh }) {
   const manualMarket = markets.find((m) => m.id === manual.market);
   const lapInProgress = race.phase.startsWith("lap");
   const canStart = ["prerace", "break1", "break2"].includes(race.phase);
+  const suspendedMarkets = markets.filter((m) => m.suspended);
+
+  const approve = async (p) => {
+    const r = await post(`/api/admin/bets/${p.id}/approve`);
+    if (r._error) {
+      setMsg(REASON_TEXT[r._error] || r._error);
+      alert(`Approving ${p.display_name}'s ${inr(p.amount)} bet — not done.\n\n${REASON_TEXT[r._error] || r._error}`);
+    } else {
+      setMsg("");
+      if (r.suspended_market) {
+        const mkt = markets.find((m) => m.id === r.suspended_market);
+        alert(`Approved. But this bet swung "${mkt ? mkt.name : r.suspended_market}" ` +
+          `${r.swing.ratio}× on ${LABEL[r.swing.outcome] || r.swing.outcome} — the market is now ` +
+          `SUSPENDED for review. Resume it from the Suspended markets panel once you're comfortable.`);
+      }
+    }
+    refresh(); loadPending();
+  };
 
   return (
     <div className="bg-card border border-gold/50 rounded-2xl p-4 space-y-4">
       <h2 className="text-[11px] font-extrabold tracking-[.13em] uppercase text-gold">Cashier console</h2>
+
+      {suspendedMarkets.length > 0 && (
+        <div className="bg-gold/10 border border-gold/40 rounded-xl p-3 space-y-2">
+          <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-gold">
+            Suspended markets — unusual odds swing</h3>
+          {suspendedMarkets.map((m) => (
+            <div key={m.id} className="flex items-center justify-between text-sm">
+              <span>{m.name}</span>
+              <button onClick={() => act(() => post(`/api/admin/markets/${m.id}/resume`))}
+                className="bg-gold text-bg font-bold rounded-lg px-3 py-1 text-xs">Resume</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div>
         <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
@@ -521,8 +565,7 @@ function Admin({ state, refresh }) {
                 </div>
               </div>
               <div className="flex gap-2 shrink-0 ml-2">
-                <button onClick={() => act(() => post(`/api/admin/bets/${p.id}/approve`),
-                  `Approving ${p.display_name}'s ${inr(p.amount)} bet`)}
+                <button onClick={() => approve(p)}
                   className="bg-khuseel text-bg font-extrabold rounded-lg px-3 py-1.5 text-xs">Approve</button>
                 <button onClick={() => act(() => post(`/api/admin/bets/${p.id}/reject`))}
                   className="border border-edge text-bad rounded-lg px-2.5 py-1.5 text-xs">✕</button>

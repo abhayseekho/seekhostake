@@ -16,6 +16,22 @@ SIDES = ("khuseel", "bansod")
 SWIMMER_CUT = 0.30
 HOUSE_RAKE = 0.05
 
+# Payout cap: a thin market (a few hundred rupees on one side) can hand a single winning bet a
+# huge multiplier if the OTHER side is imbalanced enough (e.g. one large bet lands against thin
+# opposing liquidity). No single stake may return more than this multiple of itself; whatever
+# the uncapped parimutuel math would have paid beyond the cap becomes house profit instead —
+# it falls out of the existing `house = pool - paid - swimmer` formula automatically, so the
+# per-market sum-to-pool invariant holds without any extra bookkeeping. Applied identically to
+# the live indicative odds (market_book) and the final settlement (settle_market) so a bettor
+# never sees a displayed multiplier the actual payout won't honor.
+MAX_PAYOUT_MULT = 7
+
+# Circuit breaker: a thin market (a few hundred rupees of liquidity) can have its odds swung
+# 5-10x by a single realistically-sized bet — correct parimutuel math, but too volatile to leave
+# unattended. If one approval moves ANY outcome's multiplier by more than this ratio (in either
+# direction), the market auto-suspends for admin review; the triggering bet still goes through.
+VOLATILITY_SUSPEND_RATIO = 2.0
+
 PHASES = ("prerace", "lap1", "break1", "lap2", "break2", "lap3", "finished", "settled")
 OPEN_PHASES = ("prerace", "break1")  # any betting at all
 
@@ -119,18 +135,38 @@ def market_book(market_id, approved_bets):
                 est = 1 + (1 - SWIMMER_CUT) * max(lose - rake, 0) / w
             else:
                 est = max(pool - rake, w) / w
+            est = min(est, MAX_PAYOUT_MULT)
         out[oid] = {"label": label, "total": w, "bettors": counts[oid],
                     "est_mult": round(est, 3) if est else None}
     return {"pool": pool, "outcomes": out}
 
 
+def odds_swing(before_book, after_book):
+    """Largest single-outcome multiplier ratio between two market_book() snapshots of the SAME
+    market (before vs after applying one approval). None if either side of an outcome has no
+    price yet (nothing to compare — a fresh bet on a previously dead outcome isn't 'volatility').
+    Returns (ratio, outcome_id) for the worst offender, or (1.0, None) if nothing moved."""
+    worst, worst_oid = 1.0, None
+    for oid, after in after_book["outcomes"].items():
+        before = before_book["outcomes"].get(oid)
+        b, a = before and before["est_mult"], after["est_mult"]
+        if not b or not a:
+            continue
+        ratio = max(a / b, b / a)
+        if ratio > worst:
+            worst, worst_oid = ratio, oid
+    return worst, worst_oid
+
+
 # ── bet validation ───────────────────────────────────────────────────────────────────────────────
 
-def can_submit(market_id, phase, outcome, amount, laps=(), current_outcome=None):
+def can_submit(market_id, phase, outcome, amount, laps=(), current_outcome=None, suspended=False):
     """Returns (ok, reason)."""
     m = MARKET_BY_ID.get(market_id)
     if not m:
         return False, "bad_market"
+    if suspended:
+        return False, "market_suspended"
     if phase not in m["open_phases"]:
         return False, "book_closed"
     if outcome not in {oid for oid, _ in m["outcomes"]}:
@@ -209,7 +245,7 @@ def settle_market(market_id, approved_bets, laps):
         stake = int(b["amount"])
         if b["outcome"] == won:
             profit = (stake * winners_pot) // win_total
-            payout = stake + profit
+            payout = min(stake + profit, stake * MAX_PAYOUT_MULT)  # overflow -> house, see top
             result = "won"
         else:
             payout, result = 0, "lost"

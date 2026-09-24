@@ -46,6 +46,7 @@ race = Table(
     Column("id", Integer, primary_key=True),              # always 1
     Column("phase", String(20), nullable=False),
     Column("laps", Text, nullable=False),                 # JSON [{lap, winner, time_s}]
+    Column("suspended", Text, nullable=False, server_default="[]"),  # JSON [market_id, ...]
 )
 
 settlements = Table(
@@ -68,6 +69,7 @@ def init():
         for ddl in (
             "ALTER TABLE bets ADD COLUMN market VARCHAR(30) DEFAULT 'match'",
             "ALTER TABLE bets ADD COLUMN outcome VARCHAR(20) DEFAULT ''",
+            "ALTER TABLE race ADD COLUMN suspended TEXT DEFAULT '[]'",
         ):
             try:
                 cx.execute(text(ddl.replace("ADD COLUMN", "ADD COLUMN IF NOT EXISTS")
@@ -76,6 +78,7 @@ def init():
                 pass
         cx.execute(text("UPDATE bets SET market='match' WHERE market IS NULL OR market=''"))
         cx.execute(text("UPDATE bets SET outcome=side WHERE outcome IS NULL OR outcome=''"))
+        cx.execute(text("UPDATE race SET suspended='[]' WHERE suspended IS NULL"))
         if cx.execute(select(race.c.id).where(race.c.id == 1)).first() is None:
             cx.execute(race.insert().values(id=1, phase="prerace", laps="[]"))
 
@@ -85,12 +88,30 @@ def init():
 def get_race():
     with engine.begin() as cx:
         row = cx.execute(select(race).where(race.c.id == 1)).mappings().first()
-    return {"phase": row["phase"], "laps": json.loads(row["laps"])}
+    return {"phase": row["phase"], "laps": json.loads(row["laps"]),
+            "suspended": json.loads(row["suspended"] or "[]")}
 
 
 def set_race(phase, laps):
     with engine.begin() as cx:
         cx.execute(update(race).where(race.c.id == 1).values(phase=phase, laps=json.dumps(laps)))
+
+
+def suspend_market(market_id):
+    """Circuit breaker trip: block further bets on this one market until an admin resumes it."""
+    with engine.begin() as cx:
+        row = cx.execute(select(race.c.suspended).where(race.c.id == 1)).first()
+        cur = set(json.loads(row[0] or "[]"))
+        cur.add(market_id)
+        cx.execute(update(race).where(race.c.id == 1).values(suspended=json.dumps(sorted(cur))))
+
+
+def resume_market(market_id):
+    with engine.begin() as cx:
+        row = cx.execute(select(race.c.suspended).where(race.c.id == 1)).first()
+        cur = set(json.loads(row[0] or "[]"))
+        cur.discard(market_id)
+        cx.execute(update(race).where(race.c.id == 1).values(suspended=json.dumps(sorted(cur))))
 
 
 # ── bets ─────────────────────────────────────────────────────────────────────────────────────────
@@ -236,9 +257,11 @@ def seed_side_markets(rows, admin_email):
 
 
 def reset_book(rows, admin_email):
-    """Pre-race only (enforced at the API): wipe ALL bets and reload the seed."""
+    """Pre-race only (enforced at the API): wipe ALL bets and reload the seed. Also clears any
+    circuit-breaker suspensions — a full reset restarts betting state entirely."""
     with engine.begin() as cx:
         cx.execute(bets.delete())
+        cx.execute(update(race).where(race.c.id == 1).values(suspended="[]"))
     return seed_bets(rows)
 
 

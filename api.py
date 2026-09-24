@@ -319,9 +319,11 @@ def api_state(request: Request, as_user: bool = False):
                 shown_totals[oid] = (o["total"] - house_amt, o["bettors"] - house_n)
         my = mine_all.get(mid)
         pend = my_pendings.get(mid)
+        suspended = mid in r["suspended"]
         markets.append({
             "id": mid, "name": m["name"], "sub": m.get("sub"), "main": bool(m.get("main")),
-            "open": r["phase"] in m["open_phases"],
+            "open": r["phase"] in m["open_phases"] and not suspended,
+            "suspended": suspended,
             "pool": sum(t for t, _ in shown_totals.values()),
             "outcomes": [{"id": oid, "label": book["outcomes"][oid]["label"],
                           "est_mult": book["outcomes"][oid]["est_mult"],
@@ -370,7 +372,8 @@ def api_submit_bet(request: Request, body: BetIn):
     r = store.get_race()
     mine = store.current_approved(u["key"], body.market)
     ok, reason = rules.can_submit(body.market, r["phase"], body.outcome, body.amount,
-                                  laps=r["laps"], current_outcome=mine and mine["outcome"])
+                                  laps=r["laps"], current_outcome=mine and mine["outcome"],
+                                  suspended=body.market in r["suspended"])
     if not ok:
         raise HTTPException(400, reason)
     if _is_arbitrage(u["key"], body.market, body.outcome, body.amount, r["laps"]):
@@ -443,7 +446,8 @@ def api_approve(request: Request, bet_id: int):
         raise HTTPException(404, "not_pending")
     mine = store.current_approved(p["key"], p["market"])
     ok, reason = rules.can_submit(p["market"], r["phase"], p["outcome"], p["amount"],
-                                  laps=r["laps"], current_outcome=mine and mine["outcome"])
+                                  laps=r["laps"], current_outcome=mine and mine["outcome"],
+                                  suspended=p["market"] in r["suspended"])
     if not ok:  # book may have closed / race moved on since the request was submitted
         store.reject_bet(bet_id, u["key"], note=f"auto-rejected on approve: {reason}")
         _notify()
@@ -452,9 +456,24 @@ def api_approve(request: Request, bet_id: int):
         store.reject_bet(bet_id, u["key"], note="auto-rejected on approve: arbitrage_bet")
         _notify()
         raise HTTPException(409, "arbitrage_bet")
+    # Circuit breaker: a thin market can be swung 5-10x by one realistically-sized bet. Compare
+    # this market's odds before vs after approving; a big enough swing auto-suspends it for
+    # review. The bet itself still goes through — cash is already in hand — only FURTHER bets
+    # on this market are blocked until an admin resumes it.
+    before = rules.market_book(p["market"], store.approved_bets(p["market"]))
     store.approve_bet(bet_id, u["key"])
+    after = rules.market_book(p["market"], store.approved_bets(p["market"]))
+    swing_ratio, swing_outcome = rules.odds_swing(before, after)
+    suspended_now = False
+    if swing_ratio > rules.VOLATILITY_SUSPEND_RATIO:
+        store.suspend_market(p["market"])
+        suspended_now = True
     _notify()
-    return {"ok": True}
+    out = {"ok": True}
+    if suspended_now:
+        out["suspended_market"] = p["market"]
+        out["swing"] = {"outcome": swing_outcome, "ratio": round(swing_ratio, 2)}
+    return out
 
 
 @app.post("/api/admin/bets/{bet_id}/reject")
@@ -579,6 +598,17 @@ def api_void(request: Request, body: VoidBet):
         raise HTTPException(404, "no_live_bet")
     _notify()
     return {"ok": True, "voided": n}
+
+
+@app.post("/api/admin/markets/{market_id}/resume")
+def api_resume_market(request: Request, market_id: str):
+    """Clears a circuit-breaker suspension so the market accepts bets again."""
+    _require_owner(request)
+    if market_id not in rules.MARKET_BY_ID:
+        raise HTTPException(400, "bad_market")
+    store.resume_market(market_id)
+    _notify()
+    return {"ok": True}
 
 
 @app.post("/api/admin/race/start-lap")

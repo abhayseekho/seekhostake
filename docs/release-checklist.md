@@ -10,7 +10,7 @@ This checklist has two parts. **Use Part A now.** Part B is a reference for a hy
 
 ### Legal & responsible framing
 - [ ] Confirm the operating fact pattern with counsel or, at minimum, document Abhay's explicit, informed decision to proceed within it: closed employee group, no operator profit margin, cash settled in person, one-off or infrequent recurrence. *(architecture §0, risk R-1)*
-- [ ] Rules page bettors read before betting states plainly: this is a private pool among colleagues, not a licensed gambling product, and includes a one-line responsible-gambling note ("bet only what you're comfortable losing"). *(requirements §3.1)*
+- [x] Rules page bettors read before betting states plainly: this is a private pool among colleagues, not a licensed gambling product, and includes a one-line responsible-gambling note ("bet only what you're comfortable losing"). **Done — verified live in the deployed bundle 24 Sept**, not just committed (fetched the production JS and confirmed the text is actually there). *(requirements §3.1)*
 
 ### Data safety
 - [ ] Postgres backup/PITR status checked in the Railway dashboard; if unavailable on the current plan, a manual `pg_dump` export taken before and during the event. *(risk R-2, runbook §7)*
@@ -29,6 +29,7 @@ This checklist has two parts. **Use Part A now.** Part B is a reference for a hy
 - [ ] Pre-race cash reconciliation performed: every approved bet's cash physically confirmed in hand. *(runbook §6.1)*
 
 ### Change management
+- [x] `railway.json` now sets `healthcheckPath: /healthz` — **done 24 Sept.** Railway won't cut traffic over to a new deploy until it passes its own health check, so a build that boots broken (bad env var, crashed startup) fails closed on the old version instead of going live. Doesn't replace testing before deploying; it's a backstop for exactly the "pushed something broken in the final rush" scenario the item below still warns about.
 - [ ] No untested code change deployed within the final hour before betting opens, unless it's a genuine incident fix — the system has no staging environment, so "untested" and "unverified in production" are the same thing today. *(risk R-7)*
 - [ ] Anyone with deploy access in the final run-up is aware of the rollback procedure (`runbook §3`) before they need it, not after.
 - [ ] CI (`.github/workflows/ci.yml`, added in the second review pass) is green on the commit about to be deployed — it runs the full pytest suite and the frontend build, but only ON PUSH; it does not block Railway's auto-deploy from proceeding on a red run, since there's no branch-protection/required-check wired up yet. Check the Actions tab, don't assume. *(risk R-7 — closes the "not automated as a gate" half; the staging-environment half is still open)*

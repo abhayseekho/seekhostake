@@ -98,7 +98,7 @@ def test_happy_path_2_0_sweep_settles_and_sums():
     alice = user_client("Alice")
     r = alice.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 700})
     assert r.status_code == 200
-    r = alice.post("/api/bets", json={"market": "distance", "outcome": "no", "amount": 150})
+    r = alice.post("/api/bets", json={"market": "distance", "outcome": "no", "amount": 500})
     assert r.status_code == 200
     approve_all_pending(admin)
 
@@ -124,7 +124,7 @@ def test_happy_path_2_1_with_comeback_win():
     admin = admin_client()
     admin.post("/api/admin/seed")
     bob = user_client("Bob")
-    r = bob.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 400})
+    r = bob.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 500})
     assert r.status_code == 200
     approve_all_pending(admin)
 
@@ -132,7 +132,7 @@ def test_happy_path_2_1_with_comeback_win():
     admin.post("/api/admin/race/lap-result", json={"winner": "bansod", "time_s": 22.4})  # -> break1
 
     # comeback market opens only in break1 — bet it now
-    r = bob.post("/api/bets", json={"market": "comeback", "outcome": "yes", "amount": 200})
+    r = bob.post("/api/bets", json={"market": "comeback", "outcome": "yes", "amount": 500})
     assert r.status_code == 200
     approve_all_pending(admin)
 
@@ -183,11 +183,11 @@ def test_no_side_switch_on_match_after_lap1_starts():
     admin = admin_client()
     admin.post("/api/admin/seed")
     alice = user_client("Alice")
-    alice.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 100})
+    alice.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 500})
     approve_all_pending(admin)
     admin.post("/api/admin/race/start-lap")
     admin.post("/api/admin/race/lap-result", json={"winner": "bansod", "time_s": 22.4})  # break1
-    r = alice.post("/api/bets", json={"market": "match", "outcome": "bansod", "amount": 100})
+    r = alice.post("/api/bets", json={"market": "match", "outcome": "bansod", "amount": 500})
     assert r.status_code == 400 and r.json()["detail"] == "no_side_switch"
     # raising the SAME side is fine
     r = alice.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 500})
@@ -199,11 +199,11 @@ def test_side_market_switching_allowed_in_break1():
     admin = admin_client()
     admin.post("/api/admin/seed")
     alice = user_client("Alice")
-    alice.post("/api/bets", json={"market": "distance", "outcome": "yes", "amount": 100})
+    alice.post("/api/bets", json={"market": "distance", "outcome": "yes", "amount": 500})
     approve_all_pending(admin)
     admin.post("/api/admin/race/start-lap")
     admin.post("/api/admin/race/lap-result", json={"winner": "bansod", "time_s": 22.4})
-    r = alice.post("/api/bets", json={"market": "distance", "outcome": "no", "amount": 150})
+    r = alice.post("/api/bets", json={"market": "distance", "outcome": "no", "amount": 600})
     assert r.status_code == 200
 
 
@@ -213,7 +213,7 @@ def test_outcome_dead_after_lap1_blocks_bet():
     alice = user_client("Alice")
     admin.post("/api/admin/race/start-lap")
     admin.post("/api/admin/race/lap-result", json={"winner": "bansod", "time_s": 22.4})  # kills k20
-    r = alice.post("/api/bets", json={"market": "score", "outcome": "k20", "amount": 100})
+    r = alice.post("/api/bets", json={"market": "score", "outcome": "k20", "amount": 500})
     assert r.status_code == 400 and r.json()["detail"] == "outcome_dead"
 
 
@@ -368,21 +368,21 @@ def test_arbitrage_bet_rejected_at_submit():
     admin = admin_client()
     admin.post("/api/admin/seed")
     other1 = user_client("Other1")
-    assert other1.post("/api/bets", json={"market": "distance", "outcome": "no", "amount": 1200}).status_code == 200
+    assert other1.post("/api/bets", json={"market": "distance", "outcome": "no", "amount": 2400}).status_code == 200
     approve_all_pending(admin)
 
     _advance_to_break1(admin)
 
     other2 = user_client("Other2")
-    assert other2.post("/api/bets", json={"market": "comeback", "outcome": "yes", "amount": 900}).status_code == 200
+    assert other2.post("/api/bets", json={"market": "comeback", "outcome": "yes", "amount": 1800}).status_code == 200
     approve_all_pending(admin)
 
     p = user_client("Arbitrageur")
-    r1 = p.post("/api/bets", json={"market": "distance", "outcome": "yes", "amount": 400})
+    r1 = p.post("/api/bets", json={"market": "distance", "outcome": "yes", "amount": 800})
     assert r1.status_code == 200
     approve_all_pending(admin)
 
-    r2 = p.post("/api/bets", json={"market": "comeback", "outcome": "no", "amount": 300})
+    r2 = p.post("/api/bets", json={"market": "comeback", "outcome": "no", "amount": 600})
     assert r2.status_code == 409
     assert r2.json()["detail"] == "arbitrage_bet"
     # confirm the rejected leg never entered the book at all (not even pending)
@@ -398,20 +398,20 @@ def test_arbitrage_bet_rejected_at_approve_time_too():
     admin = admin_client()
     admin.post("/api/admin/seed")
     other1 = user_client("Other1")
-    other1.post("/api/bets", json={"market": "distance", "outcome": "no", "amount": 1200})
+    other1.post("/api/bets", json={"market": "distance", "outcome": "no", "amount": 2400})
     approve_all_pending(admin)
 
     p = user_client("Arbitrageur")
-    p.post("/api/bets", json={"market": "distance", "outcome": "yes", "amount": 400})
+    p.post("/api/bets", json={"market": "distance", "outcome": "yes", "amount": 800})
     approve_all_pending(admin)
 
     _advance_to_break1(admin)
 
     other2 = user_client("Other2")
-    other2.post("/api/bets", json={"market": "comeback", "outcome": "yes", "amount": 900})
+    other2.post("/api/bets", json={"market": "comeback", "outcome": "yes", "amount": 1800})
     # arbitrageur's comeback=no submits successfully (other2's bet isn't approved yet, so this
     # single leg alone isn't arbitrage at submit time)...
-    r = p.post("/api/bets", json={"market": "comeback", "outcome": "no", "amount": 300})
+    r = p.post("/api/bets", json={"market": "comeback", "outcome": "no", "amount": 600})
     assert r.status_code == 200
 
     pending = admin.get("/api/admin/pending").json()["pending"]
@@ -436,7 +436,7 @@ def test_normal_hedge_across_markets_is_allowed():
     r1 = alice.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 500})
     assert r1.status_code == 200
     approve_all_pending(admin)
-    r2 = alice.post("/api/bets", json={"market": "lap1", "outcome": "khuseel", "amount": 300})
+    r2 = alice.post("/api/bets", json={"market": "lap1", "outcome": "khuseel", "amount": 500})
     assert r2.status_code == 200
 
 

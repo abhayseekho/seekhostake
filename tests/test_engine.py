@@ -157,15 +157,16 @@ def test_can_submit_rules():
     for phase in ("lap1", "lap2", "break2", "lap3", "finished", "settled"):
         assert engine.can_submit("match", phase, "khuseel", 500) == (False, "book_closed")
     assert engine.can_submit("match", "prerace", "khuseel", 0) == (False, "bad_amount")
-    # market-specific windows
+    # market-specific windows (book_closed fires before the amount check either way — amount
+    # left below the ₹500 minimum here deliberately, to prove that)
     assert engine.can_submit("lap1", "break1", "khuseel", 100) == (False, "book_closed")
     assert engine.can_submit("comeback", "prerace", "yes", 100) == (False, "book_closed")
-    assert engine.can_submit("comeback", "break1", "yes", 100)[0]
+    assert engine.can_submit("comeback", "break1", "yes", 500)[0]
     # dead outcome after lap 1
-    assert engine.can_submit("score", "break1", "k20", 100,
+    assert engine.can_submit("score", "break1", "k20", 500,
                              laps=LAPS_K21[:1]) == (False, "outcome_dead")
     # side-switch freedom on side markets
-    assert engine.can_submit("distance", "break1", "yes", 100, current_outcome="no")[0]
+    assert engine.can_submit("distance", "break1", "yes", 500, current_outcome="no")[0]
 
 
 def test_phase_machine_best_of_3():
@@ -231,9 +232,11 @@ def test_odds_swing_ignores_dead_outcome_drift():
 
 
 def test_can_submit_respects_suspension():
+    # suspended check fires before the amount check either way — amount left below the ₹500
+    # minimum on the True case deliberately, to prove that
     assert engine.can_submit("lap1", "prerace", "khuseel", 100, suspended=True) == \
         (False, "market_suspended")
-    assert engine.can_submit("lap1", "prerace", "khuseel", 100, suspended=False)[0]
+    assert engine.can_submit("lap1", "prerace", "khuseel", 500, suspended=False)[0]
 
 
 def test_can_submit_rejects_amount_above_max():
@@ -241,6 +244,13 @@ def test_can_submit_rejects_amount_above_max():
     single stake safe) — but a typo'd extra zero should never even reach the pool."""
     assert engine.can_submit("match", "prerace", "khuseel", engine.MAX_BET_AMOUNT)[0]
     assert engine.can_submit("match", "prerace", "khuseel", engine.MAX_BET_AMOUNT + 1) == \
+        (False, "bad_amount")
+
+
+def test_can_submit_rejects_amount_below_min():
+    """Business rule: ₹500 minimum per portal bet (Abhay)."""
+    assert engine.can_submit("match", "prerace", "khuseel", engine.MIN_BET_AMOUNT)[0]
+    assert engine.can_submit("match", "prerace", "khuseel", engine.MIN_BET_AMOUNT - 1) == \
         (False, "bad_amount")
 
 

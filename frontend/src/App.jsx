@@ -30,7 +30,7 @@ const PHASE_LABEL = {
 const REASON_TEXT = {
   book_closed: "This market is closed.",
   no_side_switch: "Side switching is locked after lap 1. You can raise your existing pick only.",
-  bad_amount: "Enter a valid amount (minimum ₹1).",
+  bad_amount: "Enter a valid amount (minimum ₹500).",
   outcome_dead: "This outcome is no longer possible.",
   not_pending: "This request was already handled.",
   arbitrage_bet: "This combination would guarantee you a profit regardless of outcome. One of your bets must carry risk.",
@@ -327,7 +327,7 @@ function BetSlip({ picked, refresh, onClear }) {
             <input inputMode="numeric" placeholder="Amount ₹" value={amount}
               onChange={(e) => setAmount(e.target.value.replace(/\D/g, ""))}
               className="flex-1 min-w-0 bg-bg border border-edge rounded-xl px-4 py-3 font-bold outline-none focus:border-gold" />
-            {[100, 500, 1000].map((v) => (
+            {[500, 1000, 2000].map((v) => (
               <button key={v} onClick={() => setAmount(String(v))}
                 className="bg-bg border border-edge rounded-xl px-3 text-sm text-dim hover:text-ink">
                 {v >= 1000 ? v / 1000 + "k" : v}</button>
@@ -556,8 +556,15 @@ function Admin({ state, refresh }) {
   };
 
   return (
-    <div className="bg-card border border-gold/50 rounded-2xl p-4 space-y-4">
-      <h2 className="text-[11px] font-extrabold tracking-[.13em] uppercase text-gold">Cashier console</h2>
+    <div className="bg-card border border-gold/50 rounded-2xl p-4 space-y-5">
+      <div className="flex items-center justify-between">
+        <h2 className="text-[11px] font-extrabold tracking-[.13em] uppercase text-gold">Cashier console</h2>
+        {pending.length > 0 && (
+          <span className="text-[11px] font-bold text-gold bg-gold/10 border border-gold/40 rounded-full px-2.5 py-0.5">
+            {pending.length} pending
+          </span>
+        )}
+      </div>
 
       {suspendedMarkets.length > 0 && (
         <div className="bg-gold/10 border border-gold/40 rounded-xl p-3 space-y-2">
@@ -577,21 +584,7 @@ function Admin({ state, refresh }) {
         </div>
       )}
 
-      <div>
-        <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
-          Market control</h3>
-        <div className="flex flex-wrap gap-1.5">
-          {markets.map((m) => (
-            <button key={m.id}
-              onClick={() => act(() => post(`/api/admin/markets/${m.id}/${m.suspended ? "resume" : "suspend"}`))}
-              className={`text-[11px] rounded-lg px-2.5 py-1 border ${m.suspended
-                ? "border-gold/40 bg-gold/10 text-gold" : "border-edge text-faint hover:text-dim"}`}>
-              {m.name} {m.suspended ? "· Resume" : "· Pause"}
-            </button>
-          ))}
-        </div>
-      </div>
-
+      {/* ── Needs your attention now ─────────────────────────────────────── */}
       <div>
         <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
           Pending · collect cash first ({pending.length})</h3>
@@ -679,77 +672,101 @@ function Admin({ state, refresh }) {
         )}
       </div>
 
-      {house && race.phase !== "settled" && (
-        <div>
-          <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
-            House seed · cap {inr(house.seed_cap)} ·{" "}
-            <span className={house.floor >= 0 ? "text-khuseel" : "text-bad"}>
-              worst case {house.floor >= 0 ? "+" : "−"}{inr(Math.abs(house.floor))}
-            </span></h3>
-          <div className="flex flex-wrap gap-2 items-center">
-            <span className="text-xs text-dim">
-              {house.seed ? <>Current: <b className={TONE_TEXT[tone(house.seed.outcome)]}>
-                {LABEL[house.seed.outcome]} {inr(house.seed.amount)}</b></> : "No seed placed."}
-            </span>
-            <input placeholder="₹" inputMode="numeric" value={seedAmt}
-              onChange={(e) => setSeedAmt(e.target.value.replace(/\D/g, ""))}
-              className="bg-bg border border-edge rounded-xl px-3 py-2 w-24" />
-            {SIDES.map((s) => (
-              <button key={s} disabled={seedAmt === ""}
-                onClick={() => act(() => post("/api/admin/house-seed",
-                  { outcome: s, amount: parseInt(seedAmt, 10) || 0 })).then(() => setSeedAmt(""))}
-                className={`rounded-xl px-3 py-2 text-xs font-bold border border-edge ${SIDE_TEXT[s]}`}>
-                Seed {LABEL[s]}
-              </button>
-            ))}
-            {house.seed && (
-              <button onClick={() => act(() => post("/api/admin/house-seed", { outcome: house.seed.outcome, amount: 0 }))}
-                className="text-bad text-xs underline">Remove seed</button>
-            )}
-            <button onClick={() => act(() => post("/api/admin/side-seeds", { per_market: 200, tilt: true }))}
-              className="rounded-xl px-3 py-2 text-xs font-bold border border-edge text-gold">
-              Seed side odds · ₹200/market · Bansod-tilted
-            </button>
-            <button onClick={() => act(() => post("/api/admin/side-seeds", { per_market: 0 }))}
-              className="text-faint text-xs underline">Clear side liquidity</button>
-          </div>
-        </div>
-      )}
+      {/* ── Setup & rare-use tools — tucked away, one tap to reach ───────── */}
+      <details className="border-t border-edge/60 pt-3">
+        <summary className="cursor-pointer text-[11px] font-bold tracking-[.13em] uppercase text-faint hover:text-dim select-none">
+          Setup &amp; manual tools</summary>
 
-      {race.phase !== "settled" && (
-        <div>
-          <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
-            Manual bet · amount 0 = void</h3>
-          <div className="flex flex-wrap gap-2">
-            <input placeholder="Name" value={manual.name}
-              onChange={(e) => setManual({ ...manual, name: e.target.value })}
-              className="bg-bg border border-edge rounded-xl px-3 py-2 w-32" />
-            <select value={manual.market}
-              onChange={(e) => {
-                const mk = markets.find((m) => m.id === e.target.value);
-                setManual({ ...manual, market: e.target.value, outcome: mk.outcomes[0].id });
-              }}
-              className="bg-bg border border-edge rounded-xl px-3 py-2">
-              {markets.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-            <select value={manual.outcome} onChange={(e) => setManual({ ...manual, outcome: e.target.value })}
-              className="bg-bg border border-edge rounded-xl px-3 py-2">
-              {manualMarket.outcomes.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-            </select>
-            <input placeholder="₹" inputMode="numeric" value={manual.amount}
-              onChange={(e) => setManual({ ...manual, amount: e.target.value.replace(/\D/g, "") })}
-              className="bg-bg border border-edge rounded-xl px-3 py-2 w-24" />
-            <button disabled={!manual.name || manual.amount === ""}
-              onClick={() => act(() => post("/api/admin/bets/manual",
-                { name: manual.name, market: manual.market, outcome: manual.outcome,
-                  amount: parseInt(manual.amount, 10) }))
-                .then(() => setManual({ name: "", market: "match", outcome: "khuseel", amount: "" }))}
-              className={`rounded-xl px-4 py-2 font-bold ${manual.name && manual.amount !== "" ? "bg-khuseel text-bg" : "bg-raise text-faint"}`}>
-              Save
-            </button>
+        <div className="mt-3 space-y-4">
+          <div>
+            <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
+              Market control</h3>
+            <div className="flex flex-wrap gap-1.5">
+              {markets.map((m) => (
+                <button key={m.id}
+                  onClick={() => act(() => post(`/api/admin/markets/${m.id}/${m.suspended ? "resume" : "suspend"}`))}
+                  className={`text-[11px] rounded-lg px-2.5 py-1 border ${m.suspended
+                    ? "border-gold/40 bg-gold/10 text-gold" : "border-edge text-faint hover:text-dim"}`}>
+                  {m.name} {m.suspended ? "· Resume" : "· Pause"}
+                </button>
+              ))}
+            </div>
           </div>
+
+          {house && race.phase !== "settled" && (
+            <div>
+              <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
+                House seed · cap {inr(house.seed_cap)} ·{" "}
+                <span className={house.floor >= 0 ? "text-khuseel" : "text-bad"}>
+                  worst case {house.floor >= 0 ? "+" : "−"}{inr(Math.abs(house.floor))}
+                </span></h3>
+              <div className="flex flex-wrap gap-2 items-center">
+                <span className="text-xs text-dim">
+                  {house.seed ? <>Current: <b className={TONE_TEXT[tone(house.seed.outcome)]}>
+                    {LABEL[house.seed.outcome]} {inr(house.seed.amount)}</b></> : "No seed placed."}
+                </span>
+                <input placeholder="₹" inputMode="numeric" value={seedAmt}
+                  onChange={(e) => setSeedAmt(e.target.value.replace(/\D/g, ""))}
+                  className="bg-bg border border-edge rounded-xl px-3 py-2 w-24" />
+                {SIDES.map((s) => (
+                  <button key={s} disabled={seedAmt === ""}
+                    onClick={() => act(() => post("/api/admin/house-seed",
+                      { outcome: s, amount: parseInt(seedAmt, 10) || 0 })).then(() => setSeedAmt(""))}
+                    className={`rounded-xl px-3 py-2 text-xs font-bold border border-edge ${SIDE_TEXT[s]}`}>
+                    Seed {LABEL[s]}
+                  </button>
+                ))}
+                {house.seed && (
+                  <button onClick={() => act(() => post("/api/admin/house-seed", { outcome: house.seed.outcome, amount: 0 }))}
+                    className="text-bad text-xs underline">Remove seed</button>
+                )}
+                <button onClick={() => act(() => post("/api/admin/side-seeds", { per_market: 200, tilt: true }))}
+                  className="rounded-xl px-3 py-2 text-xs font-bold border border-edge text-gold">
+                  Seed side odds · ₹200/market · Bansod-tilted
+                </button>
+                <button onClick={() => act(() => post("/api/admin/side-seeds", { per_market: 0 }))}
+                  className="text-faint text-xs underline">Clear side liquidity</button>
+              </div>
+            </div>
+          )}
+
+          {race.phase !== "settled" && (
+            <div>
+              <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
+                Manual bet · amount 0 = void</h3>
+              <div className="flex flex-wrap gap-2">
+                <input placeholder="Name" value={manual.name}
+                  onChange={(e) => setManual({ ...manual, name: e.target.value })}
+                  className="bg-bg border border-edge rounded-xl px-3 py-2 w-32" />
+                <select value={manual.market}
+                  onChange={(e) => {
+                    const mk = markets.find((m) => m.id === e.target.value);
+                    setManual({ ...manual, market: e.target.value, outcome: mk.outcomes[0].id });
+                  }}
+                  className="bg-bg border border-edge rounded-xl px-3 py-2">
+                  {markets.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+                <select value={manual.outcome} onChange={(e) => setManual({ ...manual, outcome: e.target.value })}
+                  className="bg-bg border border-edge rounded-xl px-3 py-2">
+                  {manualMarket.outcomes.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                </select>
+                <input placeholder="₹" inputMode="numeric" value={manual.amount}
+                  onChange={(e) => setManual({ ...manual, amount: e.target.value.replace(/\D/g, "") })}
+                  className="bg-bg border border-edge rounded-xl px-3 py-2 w-24" />
+                <button disabled={!manual.name || manual.amount === ""}
+                  onClick={() => act(() => post("/api/admin/bets/manual",
+                    { name: manual.name, market: manual.market, outcome: manual.outcome,
+                      amount: parseInt(manual.amount, 10) }))
+                    .then(() => setManual({ name: "", market: "match", outcome: "khuseel", amount: "" }))}
+                  className={`rounded-xl px-4 py-2 font-bold ${manual.name && manual.amount !== "" ? "bg-khuseel text-bg" : "bg-raise text-faint"}`}>
+                  Save
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </details>
+
       {msg && <p className="text-bad text-sm">{msg}</p>}
     </div>
   );

@@ -40,6 +40,12 @@ VOLATILITY_SUSPEND_RATIO = 2.0
 # pre-race book (₹60,050), so it can never bind on a legitimate bet.
 MAX_BET_AMOUNT = 1_000_000
 
+# Business rule (Abhay): ₹500 minimum per portal bet — keeps cash collection worth the organiser's
+# time and each request meaningfully sized. Applies to bettor self-service submission only (the
+# admin's manual-entry/reconciliation tool has its own, separate validation — amount=0 there means
+# "void", not "too small", and cash-reconciliation corrections shouldn't be blocked by this floor).
+MIN_BET_AMOUNT = 500
+
 PHASES = ("prerace", "lap1", "break1", "lap2", "break2", "lap3", "finished", "settled")
 OPEN_PHASES = ("prerace", "break1")  # any betting at all
 
@@ -194,7 +200,7 @@ def can_submit(market_id, phase, outcome, amount, laps=(), current_outcome=None,
         return False, "book_closed"
     if outcome not in {oid for oid, _ in m["outcomes"]}:
         return False, "bad_outcome"
-    if not isinstance(amount, int) or amount < 1 or amount > MAX_BET_AMOUNT:
+    if not isinstance(amount, int) or amount < MIN_BET_AMOUNT or amount > MAX_BET_AMOUNT:
         return False, "bad_amount"
     if not outcome_alive(market_id, outcome, list(laps)):
         return False, "outcome_dead"

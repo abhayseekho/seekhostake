@@ -16,6 +16,7 @@ admin unlocks with ADMIN_PASSWORD via POST /auth/admin.
 import os
 import re
 import asyncio
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -252,6 +253,14 @@ def _is_arbitrage(key, market, outcome, amount, laps):
 # would each hold their own subscriber set and miss each other's events.
 _subscribers: "set[asyncio.Queue]" = set()
 
+# api_approve's before/approve/after/suspend-decision sequence is three separate DB transactions,
+# not one atomic unit. Sync routes run in FastAPI's threadpool, so two concurrent Approve calls on
+# the SAME market can genuinely interleave and corrupt each other's before/after swing snapshot —
+# found by review, confirmed by simulation: ~10% of randomized concurrent-approval interleavings
+# produced a missed volatility detection. Serializing all approvals behind one lock costs nothing
+# at this app's scale (one admin, clicking buttons) and removes the race entirely.
+_approve_lock = threading.Lock()
+
 
 def _notify():
     for q in list(_subscribers):
@@ -461,52 +470,56 @@ def api_pending(request: Request):
 @app.post("/api/admin/bets/{bet_id}/approve")
 def api_approve(request: Request, bet_id: int):
     u = _require_owner(request)
-    r = store.get_race()
-    p = store.bet_by_id(bet_id)
-    if not p or p["status"] != "pending":
-        raise HTTPException(404, "not_pending")
-    mine = store.current_approved(p["key"], p["market"])
-    ok, reason = rules.can_submit(p["market"], r["phase"], p["outcome"], p["amount"],
-                                  laps=r["laps"], current_outcome=mine and mine["outcome"],
-                                  suspended=p["market"] in r["suspended"])
-    if not ok:  # book may have closed / race moved on since the request was submitted
-        store.reject_bet(bet_id, u["key"], note=f"auto-rejected on approve: {reason}")
+    # Whole handler serialized: see _approve_lock docstring. Cheap at this app's real call volume,
+    # and removes any interleaving between this approval's before/after swing snapshot and another
+    # concurrent one on the same market (or a second approval racing the same pending bet).
+    with _approve_lock:
+        r = store.get_race()
+        p = store.bet_by_id(bet_id)
+        if not p or p["status"] != "pending":
+            raise HTTPException(404, "not_pending")
+        mine = store.current_approved(p["key"], p["market"])
+        ok, reason = rules.can_submit(p["market"], r["phase"], p["outcome"], p["amount"],
+                                      laps=r["laps"], current_outcome=mine and mine["outcome"],
+                                      suspended=p["market"] in r["suspended"])
+        if not ok:  # book may have closed / race moved on since the request was submitted
+            store.reject_bet(bet_id, u["key"], note=f"auto-rejected on approve: {reason}")
+            _notify()
+            raise HTTPException(400, reason)
+        if _is_arbitrage(p["key"], p["market"], p["outcome"], p["amount"], r["laps"]):
+            store.reject_bet(bet_id, u["key"], note="auto-rejected on approve: arbitrage_bet")
+            _notify()
+            raise HTTPException(409, "arbitrage_bet")
+        # Circuit breaker: a thin market can be swung 5-10x by one realistically-sized bet. Compare
+        # this market's odds before vs after approving — a big swing is a PROXY for risk, not risk
+        # itself, so before acting on it we check the actual invariant the whole engine is built on:
+        # house_floor (worst-case organiser take across every possible race outcome, right now, with
+        # this bet included). If the house is provably safe regardless, there is nothing to protect —
+        # clear it instantly and stay live. Only a swing that ALSO leaves the house exposed suspends
+        # the market for a human. One synchronous check, no polling: this is as fast as it gets — a
+        # background loop would only add latency for a number we already have in hand.
+        before = rules.market_book(p["market"], store.approved_bets(p["market"]))
+        store.approve_bet(bet_id, u["key"])
+        after = rules.market_book(p["market"], store.approved_bets(p["market"]))
+        swing_ratio, swing_outcome = rules.odds_swing(p["market"], before, after, laps=r["laps"])
+        suspended_now = False
+        swing_cleared = False
+        floor = None
+        if swing_ratio > rules.VOLATILITY_SUSPEND_RATIO:
+            floor = rules.house_floor(store.approved_by_market(), r["laps"])
+            if floor >= 0:
+                swing_cleared = True  # house safe regardless of outcome — nothing to protect
+            else:
+                store.suspend_market(p["market"])
+                suspended_now = True
         _notify()
-        raise HTTPException(400, reason)
-    if _is_arbitrage(p["key"], p["market"], p["outcome"], p["amount"], r["laps"]):
-        store.reject_bet(bet_id, u["key"], note="auto-rejected on approve: arbitrage_bet")
-        _notify()
-        raise HTTPException(409, "arbitrage_bet")
-    # Circuit breaker: a thin market can be swung 5-10x by one realistically-sized bet. Compare
-    # this market's odds before vs after approving — a big swing is a PROXY for risk, not risk
-    # itself, so before acting on it we check the actual invariant the whole engine is built on:
-    # house_floor (worst-case organiser take across every possible race outcome, right now, with
-    # this bet included). If the house is provably safe regardless, there is nothing to protect —
-    # clear it instantly and stay live. Only a swing that ALSO leaves the house exposed suspends
-    # the market for a human. One synchronous check, no polling: this is as fast as it gets — a
-    # background loop would only add latency for a number we already have in hand.
-    before = rules.market_book(p["market"], store.approved_bets(p["market"]))
-    store.approve_bet(bet_id, u["key"])
-    after = rules.market_book(p["market"], store.approved_bets(p["market"]))
-    swing_ratio, swing_outcome = rules.odds_swing(before, after)
-    suspended_now = False
-    swing_cleared = False
-    floor = None
-    if swing_ratio > rules.VOLATILITY_SUSPEND_RATIO:
-        floor = rules.house_floor(store.approved_by_market(), r["laps"])
-        if floor >= 0:
-            swing_cleared = True  # house safe regardless of outcome — nothing to protect
-        else:
-            store.suspend_market(p["market"])
-            suspended_now = True
-    _notify()
-    out = {"ok": True}
-    if suspended_now:
-        out["suspended_market"] = p["market"]
-        out["swing"] = {"outcome": swing_outcome, "ratio": round(swing_ratio, 2), "floor": floor}
-    elif swing_cleared:
-        out["swing_cleared"] = {"outcome": swing_outcome, "ratio": round(swing_ratio, 2), "floor": floor}
-    return out
+        out = {"ok": True}
+        if suspended_now:
+            out["suspended_market"] = p["market"]
+            out["swing"] = {"outcome": swing_outcome, "ratio": round(swing_ratio, 2), "floor": floor}
+        elif swing_cleared:
+            out["swing_cleared"] = {"outcome": swing_outcome, "ratio": round(swing_ratio, 2), "floor": floor}
+        return out
 
 
 @app.post("/api/admin/bets/{bet_id}/reject")

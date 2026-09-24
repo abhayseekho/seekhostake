@@ -141,13 +141,18 @@ def market_book(market_id, approved_bets):
     return {"pool": pool, "outcomes": out}
 
 
-def odds_swing(before_book, after_book):
+def odds_swing(market_id, before_book, after_book, laps=()):
     """Largest single-outcome multiplier ratio between two market_book() snapshots of the SAME
     market (before vs after applying one approval). None if either side of an outcome has no
     price yet (nothing to compare — a fresh bet on a previously dead outcome isn't 'volatility').
+    Dead outcomes (e.g. the score market's losing-2-0 line after lap 1) are skipped entirely:
+    their multiplier drifts as a pure side effect of the pool growing on OTHER outcomes — nobody
+    can bet on them to correct it, so that drift is not volatility, it's arithmetic.
     Returns (ratio, outcome_id) for the worst offender, or (1.0, None) if nothing moved."""
     worst, worst_oid = 1.0, None
     for oid, after in after_book["outcomes"].items():
+        if not outcome_alive(market_id, oid, list(laps)):
+            continue
         before = before_book["outcomes"].get(oid)
         b, a = before and before["est_mult"], after["est_mult"]
         if not b or not a:

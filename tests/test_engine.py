@@ -188,7 +188,7 @@ def test_odds_swing_flags_thin_market_moves():
     seed = _mk([("khuseel", 80), ("bansod", 120)])
     before = engine.market_book("lap1", seed)
     after = engine.market_book("lap1", seed + _mk([("khuseel", 500)]))
-    ratio, oid = engine.odds_swing(before, after)
+    ratio, oid = engine.odds_swing("lap1", before, after)
     assert ratio > engine.VOLATILITY_SUSPEND_RATIO
     assert oid == "bansod"  # bansod's price is what moved (khuseel's own side barely changes)
 
@@ -198,7 +198,7 @@ def test_odds_swing_ignores_normal_growth():
     seed = _mk([("khuseel", 28050), ("bansod", 32000)])
     before = engine.market_book("match", seed)
     after = engine.market_book("match", seed + _mk([("khuseel", 500)]))
-    ratio, _ = engine.odds_swing(before, after)
+    ratio, _ = engine.odds_swing("match", before, after)
     assert ratio < engine.VOLATILITY_SUSPEND_RATIO
 
 
@@ -207,8 +207,27 @@ def test_odds_swing_no_prior_price_is_not_volatility():
     # that's demand showing up, not a "swing", so it must not trip the breaker.
     before = engine.market_book("distance", [])
     after = engine.market_book("distance", _mk([("yes", 500)]))
-    ratio, oid = engine.odds_swing(before, after)
+    ratio, oid = engine.odds_swing("distance", before, after)
     assert ratio == 1.0 and oid is None
+
+
+def test_odds_swing_ignores_dead_outcome_drift():
+    # Regression: after lap 1, one score outcome (the loser's 2-0 line) is permanently dead —
+    # its multiplier still drifts as a pure side effect whenever the pool grows on a LIVE
+    # outcome, since every outcome in a market shares the same pool. That drift is arithmetic,
+    # not demand, and nobody can ever bet on the dead line to "correct" it — so it must never
+    # trip the breaker, no matter how large the ratio looks in isolation.
+    laps_after_lap1 = [{"lap": 1, "winner": "bansod", "time_s": 22.4}]
+    seed = _mk([("k20", 81), ("k21", 96), ("b20", 23), ("b21", 22)])
+    before = engine.market_book("score", seed)
+    after = engine.market_book("score", seed + _mk([("k21", 267)]))  # ordinary bet on a live line
+    # Sanity: k20 (dead) swings hard as a pure side effect, and would wrongly trip if not excluded.
+    naive_ratio, naive_oid = engine.odds_swing("score", before, after)  # laps=() -> nothing excluded
+    assert naive_ratio > engine.VOLATILITY_SUSPEND_RATIO and naive_oid == "k20"
+    # With the actual lap history supplied, the dead outcome is skipped entirely.
+    ratio, oid = engine.odds_swing("score", before, after, laps=laps_after_lap1)
+    assert oid != "k20"
+    assert ratio <= engine.VOLATILITY_SUSPEND_RATIO  # the live k21 bet alone doesn't trip it
 
 
 def test_can_submit_respects_suspension():

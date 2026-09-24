@@ -557,3 +557,51 @@ def test_manual_admin_bet_and_void_reconcile():
     admin.post("/api/admin/bets/manual",
               json={"name": "Walk-in", "market": "match", "outcome": "bansod", "amount": 0})  # void
     assert match_pool(admin) == before
+
+
+# ── volatility circuit breaker ───────────────────────────────────────────────────────────────────
+
+def test_concurrent_approvals_on_same_market_dont_lose_either_bet():
+    """Regression for a review finding: api_approve's before/approve/after/suspend-decision
+    sequence is three separate DB transactions. Before _approve_lock, two real concurrent HTTP
+    approvals on the same thin market could interleave and corrupt each other's swing snapshot
+    (~10% of randomized interleavings produced a missed volatility detection in simulation).
+    Fire two genuinely concurrent approve requests (a threading.Barrier forces them to start in
+    the same instant) and assert the lock's actual job: neither call is lost, corrupted, or
+    deadlocked — both land as approved with the correct combined pool, regardless of which one
+    the lock let through first."""
+    import threading
+
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice, bob = user_client("Alice Racer"), user_client("Bob Punter")
+    alice.post("/api/bets", json={"market": "lap1", "outcome": "khuseel", "amount": 500})
+    bob.post("/api/bets", json={"market": "lap1", "outcome": "bansod", "amount": 500})
+    pending = admin.get("/api/admin/pending").json()["pending"]
+    ids = [p["id"] for p in pending if p["market"] == "lap1"]
+    assert len(ids) == 2
+
+    barrier = threading.Barrier(2)
+    results = [None, None]
+
+    # Threads need their own TestClient instances sharing the same underlying app/DB, since a
+    # single TestClient's session cookie jar isn't meant for concurrent use from two threads.
+    admin_a, admin_b = admin_client(), admin_client()
+
+    def approve_with(client, i, bet_id):
+        barrier.wait(timeout=5)  # both threads release together, forcing real interleaving
+        results[i] = client.post(f"/api/admin/bets/{bet_id}/approve")
+
+    t1 = threading.Thread(target=approve_with, args=(admin_a, 0, ids[0]))
+    t2 = threading.Thread(target=approve_with, args=(admin_b, 1, ids[1]))
+    t1.start(); t2.start()
+    t1.join(timeout=10); t2.join(timeout=10)
+
+    assert not t1.is_alive() and not t2.is_alive(), "a thread is still blocked -- possible deadlock"
+    assert results[0] is not None and results[1] is not None
+    assert results[0].status_code == 200, results[0].json()
+    assert results[1].status_code == 200, results[1].json()
+
+    approved = store.approved_bets("lap1")
+    assert {b["display_name"] for b in approved} == {"Alice Racer", "Bob Punter"}
+    assert sum(b["amount"] for b in approved) == 1000  # neither approval lost the other's write

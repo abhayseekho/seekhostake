@@ -480,9 +480,13 @@ function Admin({ state, refresh }) {
   }, []);
   useEffect(() => { loadPending(); }, [loadPending, state]);
 
-  const act = async (fn) => {
+  const act = async (fn, failLabel) => {
     const r = await fn();
-    setMsg(r._error ? (REASON_TEXT[r._error] || r._error) : "");
+    const text = r._error ? (REASON_TEXT[r._error] || r._error) : "";
+    setMsg(text);
+    // Approve/reject failures remove the row from the queue exactly like success does — the
+    // small red line below is easy to miss mid-flow, so a failure gets an interrupting alert too.
+    if (text && failLabel) alert(`${failLabel} — not done.\n\n${text}`);
     refresh(); loadPending();
   };
 
@@ -517,7 +521,8 @@ function Admin({ state, refresh }) {
                 </div>
               </div>
               <div className="flex gap-2 shrink-0 ml-2">
-                <button onClick={() => act(() => post(`/api/admin/bets/${p.id}/approve`))}
+                <button onClick={() => act(() => post(`/api/admin/bets/${p.id}/approve`),
+                  `Approving ${p.display_name}'s ${inr(p.amount)} bet`)}
                   className="bg-khuseel text-bg font-extrabold rounded-lg px-3 py-1.5 text-xs">Approve</button>
                 <button onClick={() => act(() => post(`/api/admin/bets/${p.id}/reject`))}
                   className="border border-edge text-bad rounded-lg px-2.5 py-1.5 text-xs">✕</button>
@@ -531,7 +536,15 @@ function Admin({ state, refresh }) {
         <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">Race console</h3>
         <div className="flex flex-wrap gap-2 items-center">
           {canStart && (
-            <button onClick={() => act(() => post("/api/admin/race/start-lap"))}
+            <button onClick={() => {
+              // Starting a lap can instantly invalidate a still-pending request (e.g. a Lap 1
+              // Winner bet nobody approved yet) -- it then auto-rejects on the next Approve tap,
+              // which looks identical to a successful approve unless you're watching closely.
+              if (pending.length && !confirm(
+                `${pending.length} request${pending.length > 1 ? "s are" : " is"} still pending. ` +
+                `Starting this lap may make some of them impossible to approve. Continue?`)) return;
+              act(() => post("/api/admin/race/start-lap"));
+            }}
               className="bg-bad text-ink font-bold rounded-xl px-4 py-2.5">
               ▶ Start lap {race.laps.length + 1}{race.phase === "break1" ? " — closes book" : ""}
             </button>

@@ -33,6 +33,7 @@ const REASON_TEXT = {
   bad_amount: "Enter a valid amount (minimum ₹1).",
   outcome_dead: "This outcome is no longer possible.",
   not_pending: "This request was already handled.",
+  arbitrage_bet: "This combination would guarantee you a profit regardless of outcome. One of your bets must carry risk.",
 };
 
 // ── login ────────────────────────────────────────────────────────────────────────────────────────
@@ -279,7 +280,10 @@ function BetSlip({ picked, refresh, onClear }) {
     setMsg(null);
     const r = await post("/api/bets", { market: picked.market, outcome: picked.outcome, amount: amt });
     if (r._error) setMsg({ ok: false, text: REASON_TEXT[r._error] || r._error });
-    else { setMsg({ ok: true, text: "Request submitted. Pay cash to confirm your bet." }); setAmount(""); }
+    else {
+      setMsg({ ok: true, text: `${inr(amt)} on ${picked.label} — submitted. Pay cash to confirm.` });
+      setAmount("");
+    }
     refresh();
   };
 
@@ -712,13 +716,21 @@ export default function App() {
   const [showRules, setShowRules] = useState(false);
   const [asUser, setAsUser] = useState(false);
 
+  const stateJsonRef = useRef("");
   const refresh = useCallback(async () => {
     const q = asUser ? "?as_user=1" : "";
     const r = await get("/api/state" + q);
     if (r._unauth) { setUnauth(true); return; }
     if (r._error) return;
     setUnauth(false);
-    setState(r);
+    // Live sync can now fire many times a minute (any bettor's action wakes every open tab).
+    // Skip the state update — and the re-render it would cause — when nothing actually changed,
+    // so a tap in progress never lands on a button that silently shifted a few pixels underneath it.
+    const json = JSON.stringify(r);
+    if (json !== stateJsonRef.current) {
+      stateJsonRef.current = json;
+      setState(r);
+    }
     if (r.auth_mode) setAuthMode(r.auth_mode);
     if (r.settled && !settlement) {
       const s = await get("/api/settlement" + q);
@@ -726,14 +738,22 @@ export default function App() {
     }
   }, [settlement, asUser]);
 
+  const [live, setLive] = useState(false);
+
   useEffect(() => {
     get("/api/config").then((c) => {
       if (c && c.auth_mode) setAuthMode(c.auth_mode);
       if (c) setTestLogin(!!c.test_login);
     });
     refresh();
-    const t = setInterval(refresh, 3000);
-    return () => clearInterval(t);
+    // Push-based sync: the server pings this stream the instant any bet, approval, lap result,
+    // or settlement happens, so every open tab updates within one round trip — no polling wait.
+    const es = new EventSource("/api/stream");
+    es.onopen = () => setLive(true);
+    es.onerror = () => setLive(false);  // EventSource retries on its own; flips back on reconnect
+    es.onmessage = refresh;
+    const fallback = setInterval(refresh, 15000);  // safety net if a stream silently drops
+    return () => { es.close(); clearInterval(fallback); };
   }, [refresh]);
 
   if (unauth) return <Login authMode={authMode} testLogin={testLogin} onNamed={refresh} />;
@@ -746,8 +766,14 @@ export default function App() {
   return (
     <div className="max-w-5xl mx-auto p-4 pb-16">
       <header className="flex items-center justify-between mb-4">
-        <h1 className="text-lg font-extrabold tracking-tight">
+        <h1 className="text-lg font-extrabold tracking-tight flex items-center gap-2">
           🏊 Seekho<span className="text-gold">Stake</span>
+          <span title={live ? "Live — instant sync" : "Reconnecting…"}
+            className={`inline-flex items-center gap-1 text-[9px] font-bold tracking-[.1em] uppercase
+              rounded-full px-1.5 py-0.5 ${live ? "text-khuseel bg-khuseel/10" : "text-faint bg-raise"}`}>
+            <i className={`w-[6px] h-[6px] rounded-full ${live ? "bg-khuseel animate-pulse" : "bg-faint"}`} />
+            {live ? "Live" : "…"}
+          </span>
         </h1>
         <div className="text-xs text-dim flex items-center gap-3">
           {state.me.can_admin && (

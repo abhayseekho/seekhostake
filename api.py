@@ -15,10 +15,11 @@ admin unlocks with ADMIN_PASSWORD via POST /auth/admin.
 """
 import os
 import re
+import asyncio
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
+from fastapi.responses import JSONResponse, RedirectResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
@@ -218,6 +219,60 @@ def _close_book(admin_key: str):
     return n
 
 
+def _is_arbitrage(key, market, outcome, amount, laps):
+    """Would approving this bet (on top of the person's OTHER already-approved positions) give
+    them a guaranteed profit in every possible race outcome? Simulates the post-approval book:
+    the candidate replaces any existing approved bet the person holds in the same market
+    (mirroring real supersede semantics), then checks person_floor > 0 across all race scripts."""
+    by_market = store.approved_by_market()
+    rows = list(by_market.get(market, []))
+    by_market[market] = [b for b in rows if b["key"] != key] + [
+        {"key": key, "display_name": "candidate", "outcome": outcome, "amount": amount}]
+    return rules.person_floor(by_market, key, laps) > 0
+
+
+# ── live updates (SSE) ──────────────────────────────────────────────────────────────────────────
+# One in-process broadcaster: every mutating endpoint calls _notify() after it commits, which
+# wakes every connected client's queue. Clients then re-fetch /api/state themselves — the stream
+# carries no payload, just a "something changed" ping, so sanitization stays exactly where it
+# already lives (api_state/api_settlement) with no duplicate logic to keep in sync. Requires a
+# single uvicorn process (true here — no --workers flag in the Dockerfile CMD); multiple workers
+# would each hold their own subscriber set and miss each other's events.
+_subscribers: "set[asyncio.Queue]" = set()
+
+
+def _notify():
+    for q in list(_subscribers):
+        try:
+            q.put_nowait(1)
+        except asyncio.QueueFull:
+            pass  # a ping is already queued for this client — coalesces fine, next fetch is fresh
+
+
+@app.get("/api/stream")
+async def api_stream(request: Request):
+    _require(request)
+    q: asyncio.Queue = asyncio.Queue(maxsize=1)
+    _subscribers.add(q)
+
+    async def gen():
+        try:
+            yield "retry: 2000\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    await asyncio.wait_for(q.get(), timeout=20)
+                    yield "data: update\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"  # comment ping — holds the connection through proxies
+        finally:
+            _subscribers.discard(q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ── public API ───────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/config")
@@ -318,7 +373,10 @@ def api_submit_bet(request: Request, body: BetIn):
                                   laps=r["laps"], current_outcome=mine and mine["outcome"])
     if not ok:
         raise HTTPException(400, reason)
+    if _is_arbitrage(u["key"], body.market, body.outcome, body.amount, r["laps"]):
+        raise HTTPException(409, "arbitrage_bet")
     bet_id = store.submit_bet(u["key"], u["name"], body.market, body.outcome, body.amount)
+    _notify()
     return {"ok": True, "id": bet_id, "status": "pending"}
 
 
@@ -330,6 +388,8 @@ class CancelIn(BaseModel):
 def api_cancel_bet(request: Request, body: CancelIn = CancelIn()):
     u = _require(request)
     n = store.cancel_pending(u["key"], body.market)
+    if n:
+        _notify()
     return {"ok": True, "cancelled": n}
 
 
@@ -386,8 +446,14 @@ def api_approve(request: Request, bet_id: int):
                                   laps=r["laps"], current_outcome=mine and mine["outcome"])
     if not ok:  # book may have closed / race moved on since the request was submitted
         store.reject_bet(bet_id, u["key"], note=f"auto-rejected on approve: {reason}")
+        _notify()
         raise HTTPException(400, reason)
+    if _is_arbitrage(p["key"], p["market"], p["outcome"], p["amount"], r["laps"]):
+        store.reject_bet(bet_id, u["key"], note="auto-rejected on approve: arbitrage_bet")
+        _notify()
+        raise HTTPException(409, "arbitrage_bet")
     store.approve_bet(bet_id, u["key"])
+    _notify()
     return {"ok": True}
 
 
@@ -396,6 +462,7 @@ def api_reject(request: Request, bet_id: int):
     u = _require_owner(request)
     if not store.reject_bet(bet_id, u["key"]):
         raise HTTPException(404, "not_pending")
+    _notify()
     return {"ok": True}
 
 
@@ -420,6 +487,7 @@ def api_manual(request: Request, body: ManualBet):
         raise HTTPException(400, "already_settled")
     key = store.admin_manual_bet(body.name, body.market,
                                  body.outcome or m["outcomes"][0][0], body.amount, u["key"])
+    _notify()
     return {"ok": True, "key": key}
 
 
@@ -450,6 +518,7 @@ def api_house_seed(request: Request, body: HouseSeed):
         store.set_house_seed("match", prev["outcome"] if prev else "bansod",
                              prev["amount"] if prev else 0, u["key"])
         raise HTTPException(400, f"floor_negative:{floor}")
+    _notify()
     return {"ok": True, "cap": cap, "floor": floor}
 
 
@@ -490,6 +559,7 @@ def api_side_seeds(request: Request, body: SideSeeds):
         restore = [(mid, oid, prev.get((mid, oid), 0)) for mid, oid, _ in rows]
         store.seed_side_markets(restore, u["key"])
         raise HTTPException(400, f"floor_negative:{floor}")
+    _notify()
     return {"ok": True, "outcomes_seeded": n, "per_market": body.per_market,
             "tilt": body.tilt, "floor": floor}
 
@@ -507,6 +577,7 @@ def api_void(request: Request, body: VoidBet):
     n = store.void_key(body.key, u["key"], body.market)
     if not n:
         raise HTTPException(404, "no_live_bet")
+    _notify()
     return {"ok": True, "voided": n}
 
 
@@ -522,6 +593,7 @@ def api_start_lap(request: Request):
     closed = 0
     if phase == "lap2":  # the book closes for good the moment lap 2 starts
         closed = _close_book(u["key"])
+    _notify()
     return {"ok": True, "phase": phase, "auto_rejected_pending": closed}
 
 
@@ -542,6 +614,7 @@ def api_lap_result(request: Request, body: LapResult):
     except ValueError as e:
         raise HTTPException(400, str(e))
     store.set_race(phase, laps)
+    _notify()
     return {"ok": True, "phase": phase, "race_winner": rules.race_winner(laps)}
 
 
@@ -557,6 +630,7 @@ def api_settle(request: Request):
     if not store.save_settlement(result):
         raise HTTPException(400, "already_settled")
     store.set_race("settled", r["laps"])
+    _notify()
     return result
 
 
@@ -564,6 +638,8 @@ def api_settle(request: Request):
 def api_seed(request: Request):
     _require_owner(request)
     n = store.seed_bets(SEED_BETS)
+    if n:
+        _notify()
     return {"ok": True, "seeded": n}
 
 
@@ -575,6 +651,7 @@ def api_reset_book(request: Request):
     if store.get_race()["phase"] != "prerace":
         raise HTTPException(400, "race_started")
     n = store.reset_book(SEED_BETS, u["key"])
+    _notify()
     return {"ok": True, "seeded": n}
 
 

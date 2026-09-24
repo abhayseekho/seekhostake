@@ -286,6 +286,19 @@ def house_floor(bets_by_market, laps=()):
     return min(settle_all(bets_by_market, s)["house_take"] for s in scripts)
 
 
+def person_floor(bets_by_market, key, laps=()):
+    """Min over race scripts of this person's aggregate net across all markets.
+    > 0 ⇒ they profit in EVERY possible outcome ⇒ riskless (arbitrage) portfolio."""
+    scripts = race_scripts(laps)
+    if not scripts:
+        return 0
+    floors = []
+    for s in scripts:
+        res = settle_all(bets_by_market, s)
+        floors.append(sum(r["net"] for m in res["markets"] for r in m["rows"] if r["key"] == key))
+    return min(floors)
+
+
 def max_house_seed(match_pool_human):
     """The seed cap that keeps the organiser net-non-negative: expected rake on the main market."""
     return int(HOUSE_RAKE * match_pool_human)

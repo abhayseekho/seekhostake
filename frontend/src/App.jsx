@@ -466,9 +466,17 @@ function Admin({ state, refresh }) {
   const { race, markets, house } = state;
   const matchPool = markets.find((m) => m.id === "match").pool;
 
+  const pendingJsonRef = useRef("");
   const loadPending = useCallback(async () => {
     const r = await get("/api/admin/pending");
-    if (r.pending) setPending(r.pending);
+    if (!r.pending) return;
+    // Same anti-churn guard as the main state fetch: don't re-render (and don't shift the
+    // approve/reject buttons under an in-progress tap) unless the queue actually changed.
+    const json = JSON.stringify(r.pending);
+    if (json !== pendingJsonRef.current) {
+      pendingJsonRef.current = json;
+      setPending(r.pending);
+    }
   }, []);
   useEffect(() => { loadPending(); }, [loadPending, state]);
 

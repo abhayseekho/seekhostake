@@ -815,6 +815,10 @@ function Rules({ onClose, deadlineLabel }) {
           <p>Lap results are recorded by the organiser at the pool. The organiser's decision is
             final.</p>
         </S>
+        <S n={8} title="Play responsibly">
+          <p>This is a private, for-fun pool among colleagues — not a licensed gambling product.
+            Bet only what you're comfortable losing.</p>
+        </S>
         <button onClick={onClose} className="w-full bg-khuseel text-bg font-bold rounded-xl py-3 mt-2">
           Got it
         </button>

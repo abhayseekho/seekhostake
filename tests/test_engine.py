@@ -234,3 +234,26 @@ def test_can_submit_respects_suspension():
     assert engine.can_submit("lap1", "prerace", "khuseel", 100, suspended=True) == \
         (False, "market_suspended")
     assert engine.can_submit("lap1", "prerace", "khuseel", 100, suspended=False)[0]
+
+
+def test_can_submit_rejects_amount_above_max():
+    """Fat-finger/abuse guard, not a financial one (payout cap + house_floor already make any
+    single stake safe) — but a typo'd extra zero should never even reach the pool."""
+    assert engine.can_submit("match", "prerace", "khuseel", engine.MAX_BET_AMOUNT)[0]
+    assert engine.can_submit("match", "prerace", "khuseel", engine.MAX_BET_AMOUNT + 1) == \
+        (False, "bad_amount")
+
+
+def test_name_slug_normalizes_consistently():
+    """The ONE slug function shared by name-mode login (api.py) and admin manual entry / seed
+    load (store.py) — different-looking typed names that a human would read as 'the same
+    identity' must collapse to the same key, and visibly different names must not collide."""
+    assert engine.name_slug("Rahul Sharma") == engine.name_slug("rahul sharma")
+    assert engine.name_slug("Rahul Sharma") == engine.name_slug("RAHUL SHARMA!!")
+    assert engine.name_slug("Rahul Sharma") == engine.name_slug("Rahul  Sharma")  # double space
+    assert engine.name_slug("Rahul Sharma") != engine.name_slug("Rahul Verma")
+    assert engine.name_slug("Rahul Sharma").startswith("name:")
+    # Regression pin: store.py used to slug via str.isalnum() (True for non-ASCII letters too),
+    # while api.py used this ASCII-only regex — a name with an accented letter could key
+    # differently depending on which path recorded it first. One shared function, one rule.
+    assert engine.name_slug("José") == "name:jos"

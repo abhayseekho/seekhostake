@@ -12,6 +12,8 @@ House rules (ratified with Abhay, 2026-09-15):
 - Settlement asserts every market's payouts + house take sum exactly to its pool.
 """
 
+import re
+
 SIDES = ("khuseel", "bansod")
 SWIMMER_CUT = 0.30
 HOUSE_RAKE = 0.05
@@ -31,6 +33,12 @@ MAX_PAYOUT_MULT = 7
 # unattended. If one approval moves ANY outcome's multiplier by more than this ratio (in either
 # direction), the market auto-suspends for admin review; the triggering bet still goes through.
 VOLATILITY_SUSPEND_RATIO = 2.0
+
+# Fat-finger/abuse guard, not a financial-safety mechanism — the payout cap and house_floor guard
+# already make any single stake financially safe regardless of size. This just stops a typo'd
+# extra zero (or a malicious huge number) from ever reaching the pool: ~16x the entire real
+# pre-race book (₹60,050), so it can never bind on a legitimate bet.
+MAX_BET_AMOUNT = 1_000_000
 
 PHASES = ("prerace", "lap1", "break1", "lap2", "break2", "lap3", "finished", "settled")
 OPEN_PHASES = ("prerace", "break1")  # any betting at all
@@ -59,6 +67,16 @@ MARKETS = (
 )
 MARKET_IDS = tuple(m["id"] for m in MARKETS)
 MARKET_BY_ID = {m["id"]: m for m in MARKETS}
+
+
+def name_slug(name: str) -> str:
+    """Canonical identity key for a typed name: lowercase, everything but a-z0-9 stripped. The
+    ONE definition — shared by name-mode login (api.py) and admin manual entry / seed load
+    (store.py) — so the same person always keys to the same identity no matter which path
+    records them first. (Previously duplicated with a subtly different rule per module: the
+    admin/seed path used str.isalnum(), which is also true for non-ASCII letters and digits, so a
+    name containing one could have keyed differently there than through name-mode login.)"""
+    return "name:" + re.sub(r"[^a-z0-9]", "", name.lower())
 
 
 # ── race facts ───────────────────────────────────────────────────────────────────────────────────
@@ -176,7 +194,7 @@ def can_submit(market_id, phase, outcome, amount, laps=(), current_outcome=None,
         return False, "book_closed"
     if outcome not in {oid for oid, _ in m["outcomes"]}:
         return False, "bad_outcome"
-    if not isinstance(amount, int) or amount < 1:
+    if not isinstance(amount, int) or amount < 1 or amount > MAX_BET_AMOUNT:
         return False, "bad_amount"
     if not outcome_alive(market_id, outcome, list(laps)):
         return False, "outcome_dead"

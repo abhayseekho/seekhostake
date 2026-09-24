@@ -1,9 +1,14 @@
 # FastAPI app + Google OAuth + Postgres, mirroring marketer/dashboard/requirements.txt
-fastapi>=0.110          # API framework
-uvicorn[standard]>=0.29 # ASGI server (Railway CMD)
-authlib>=1.3            # Google OAuth (OIDC) client
-httpx>=0.27             # authlib's starlette client imports it at module load
-itsdangerous>=2.1       # Starlette SessionMiddleware signing
-SQLAlchemy>=2.0         # Core-style persistence (store.py)
-psycopg[binary]>=3.1    # Postgres driver on Railway (SQLite fallback needs nothing)
-pydantic>=2.0           # request models
+#
+# Pinned exact (not >=): a fresh `docker build` re-resolves this file from scratch every deploy
+# (no lockfile, no vendored wheels) — an unpinned range could silently pull a newer major version
+# on any future rebuild, including a redeploy that changes nothing else. These are the exact
+# versions the full test suite (tests/) is green against; bump deliberately, re-run the suite.
+fastapi==0.128.8              # API framework
+uvicorn[standard]==0.39.0     # ASGI server (Railway CMD)
+authlib==1.6.12               # Google OAuth (OIDC) client
+httpx==0.28.1                 # authlib's starlette client imports it at module load
+itsdangerous==2.2.0           # Starlette SessionMiddleware signing
+SQLAlchemy==2.0.53            # Core-style persistence (store.py)
+psycopg[binary]==3.2.13       # Postgres driver on Railway (SQLite fallback needs nothing)
+pydantic==2.13.5              # request models

@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from sqlalchemy import (create_engine, MetaData, Table, Column, Integer, String, Text,
                         DateTime, select, update, text)
 
+import engine as rules
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DB_URL = os.environ.get("DATABASE_URL", f"sqlite:///{os.path.join(_HERE, 'swimbet.db')}")
 if DB_URL.startswith("postgres://"):  # Railway sometimes hands out the legacy scheme
@@ -81,6 +83,16 @@ def init():
         cx.execute(text("UPDATE race SET suspended='[]' WHERE suspended IS NULL"))
         if cx.execute(select(race.c.id).where(race.c.id == 1)).first() is None:
             cx.execute(race.insert().values(id=1, phase="prerace", laps="[]"))
+        # Belt-and-suspenders on top of the app-level _approve_lock (api.py): make "at most one
+        # approved bet per person per market" true BY CONSTRUCTION, not just by the lock holding.
+        # A partial unique index is valid, portable syntax on both SQLite and Postgres, so no
+        # dialect branching is needed here (unlike the ADD COLUMN statements above).
+        try:
+            cx.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS one_approved_per_person_market "
+                "ON bets (key, market) WHERE status = 'approved'"))
+        except Exception as e:  # noqa: BLE001 — a pre-existing violation must not block boot
+            print(f"WARNING: could not create one_approved_per_person_market index: {e}", flush=True)
 
 
 # ── race ─────────────────────────────────────────────────────────────────────────────────────────
@@ -217,7 +229,7 @@ def reject_all_pending(admin_email, note):
 def admin_manual_bet(name, market, outcome, amount, admin_email):
     """Directly place/replace (amount>0) or void (amount=0) a bet on someone's behalf.
     Keyed by name slug — used for the WhatsApp book and race-day cash reconciliation."""
-    key = "name:" + "".join(ch for ch in name.lower() if ch.isalnum())
+    key = rules.name_slug(name)
     _replace_bet(key, name.strip(), market, outcome, amount, "admin", "admin manual entry", admin_email)
     return key
 
@@ -239,6 +251,16 @@ def _replace_bet(key, display_name, market, outcome, amount, source, note, admin
                 side=outcome if outcome in ("khuseel", "bansod") else "",
                 amount=amount, status="approved", source=source, note=note,
                 created_at=_now(), decided_at=_now(), decided_by=admin_email))
+
+
+def name_on_file(key):
+    """Most recent display_name ever associated with this key (any status) — lets the API detect
+    when a freshly typed name-mode identity collides with a DIFFERENT existing person whose name
+    normalizes to the same slug, instead of silently merging the two into one identity."""
+    with engine.begin() as cx:
+        row = cx.execute(select(bets.c.display_name).where(bets.c.key == key)
+                         .order_by(bets.c.id.desc()).limit(1)).first()
+    return row[0] if row else None
 
 
 def house_seed(market="match"):
@@ -282,7 +304,7 @@ def seed_bets(rows):
         if cx.execute(select(bets.c.id).limit(1)).first() is not None:
             return 0
         for name, amount, side in rows:
-            key = "name:" + "".join(ch for ch in name.lower() if ch.isalnum())
+            key = rules.name_slug(name)
             cx.execute(bets.insert().values(
                 key=key, display_name=name, market="match", outcome=side, side=side,
                 amount=amount, status="approved", source="admin", note="pre-race WhatsApp book",

@@ -14,21 +14,48 @@ AUTH_MODE=name is the race-morning fallback: bettors identify by typed name (no 
 admin unlocks with ADMIN_PASSWORD via POST /auth/admin.
 """
 import os
-import re
+import time
 import asyncio
+import logging
 import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 
 import engine as rules
 import store
 from seed import SEED_BETS
+
+# Deliberately minimal: not a general request/access log (uvicorn already emits one to stdout,
+# which Railway captures) — just the handful of safety-critical, irreversible, or security-
+# relevant events that are otherwise invisible between requests. Bet-level audit trail already
+# lives in the DB itself (bets.decided_by/decided_at/note on every mutation).
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("swimbet")
+
+# ── Slack alerting ───────────────────────────────────────────────────────────────────────────────
+# Fire-and-forget notification for the two kinds of event that mean "a human should look at this
+# right now": a market auto-suspending (real financial risk, see odds_swing/house_floor below) and
+# an unhandled server error (a bug). Silently a no-op when unset — same "invisible until
+# configured" pattern as TEST_LOGIN_PASSWORD — so this is safe to ship ahead of the webhook existing.
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+
+
+def _alert_slack(text: str) -> None:
+    if not SLACK_WEBHOOK_URL:
+        return
+    try:
+        httpx.post(SLACK_WEBHOOK_URL, json={"text": text}, timeout=5)
+    except Exception:
+        log.exception("Slack alert failed to send")
+
 
 DEV = os.environ.get("SWIMBET_DEV", "").lower() in ("1", "true", "yes")
 AUTH_MODE = os.environ.get("AUTH_MODE", "oauth").lower()  # oauth | name
@@ -69,9 +96,60 @@ def _session_secret() -> str:
 # and login would never stick). Never set it on Railway (https there).
 _ALLOW_HTTP = os.environ.get("ALLOW_HTTP", "").lower() in ("1", "true", "yes")
 
-app = FastAPI(title="Swim Bet — Khuseel vs Bansod")
+# /docs, /redoc and the raw /openapi.json schema are a reconnaissance gift to anyone who finds the
+# URL — every route, param, and model shape laid out for free. No auth benefit to hiding them (the
+# routes still enforce their own checks), but no reason to publish the map either. Kept in DEV only.
+app = FastAPI(
+    title="Swim Bet — Khuseel vs Bansod",
+    docs_url="/docs" if DEV else None,
+    redoc_url="/redoc" if DEV else None,
+    openapi_url="/openapi.json" if DEV else None,
+)
 app.add_middleware(SessionMiddleware, secret_key=_session_secret(),
                    same_site="lax", https_only=not (DEV or _ALLOW_HTTP))
+
+# Same-origin app (SPA served from this process, API on the same origin, no third-party embeds).
+# style-src needs 'unsafe-inline' for exactly one thing: the two pool-bar width indicators in
+# App.jsx (`style={{width: ...}}`), locally computed numbers, not attacker-reachable — every other
+# directive stays closed. HSTS only when the connection is actually HTTPS-only (mirrors
+# https_only above); on plain-http LAN dev mode it would wrongly force https on the next request.
+_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+        "base-uri 'none'; form-action 'self'")
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["Content-Security-Policy"] = _CSP
+    if not (DEV or _ALLOW_HTTP):
+        resp.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return resp
+
+
+# Registering a handler for the base Exception class does not steal HTTPException's own handler —
+# Starlette resolves by most-specific-registered-class, so the deliberate HTTPException(...) calls
+# all over this file (404/400/409/…) are untouched. This only ever fires for genuine bugs.
+_last_error_alert: dict[str, float] = {}  # path -> unix ts, so a repeatedly-failing endpoint pings once
+_ERROR_ALERT_COOLDOWN_S = 300  # every occurrence is still logged; only the Slack ping is throttled
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    log.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    path = request.url.path
+    now = time.time()
+    if now - _last_error_alert.get(path, 0.0) > _ERROR_ALERT_COOLDOWN_S:
+        _last_error_alert[path] = now
+        _alert_slack(
+            f":boom: *Unhandled server error* on `{request.method} {path}`\n"
+            f"`{type(exc).__name__}: {exc}`\nCheck Railway logs for the full traceback."
+        )
+    return JSONResponse(status_code=500, content={"detail": "internal_error"})
+
 
 # ── Google OAuth (Authlib) ────────────────────────────────────────────────────────────────────────
 _oauth = None
@@ -96,10 +174,6 @@ def _allowed(email: str) -> bool:
     if domain and email.endswith("@" + domain):
         return True
     return False
-
-
-def _name_slug(name: str) -> str:
-    return "name:" + re.sub(r"[^a-z0-9]", "", name.lower())
 
 
 def _current_user(request: Request):
@@ -138,6 +212,35 @@ def _require_owner(request: Request):
     return u
 
 
+# In-memory limiter for the two password-gated endpoints (/auth/admin, /auth/test). Per-process
+# state — consistent with the SSE broadcaster's existing single-process assumption (no --workers
+# in the Dockerfile CMD). Keyed on X-Forwarded-For (Railway's edge sets this; request.client.host
+# alone would be Railway's internal proxy address for every visitor, collapsing all callers into
+# one bucket) with a same-process fallback — a best-effort deterrent against scripted guessing,
+# not a hard security boundary (the header is client-influenceable if a proxy doesn't overwrite it).
+_login_attempts: "dict[str, list[float]]" = {}
+_RATE_LIMIT_WINDOW_S = 300
+_RATE_LIMIT_MAX = 10
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_rate_limit(request: Request, bucket: str):
+    key = f"{bucket}:{_client_ip(request)}"
+    now = time.monotonic()
+    hits = [t for t in _login_attempts.get(key, []) if now - t < _RATE_LIMIT_WINDOW_S]
+    if len(hits) >= _RATE_LIMIT_MAX:
+        log.warning("rate limit tripped: bucket=%s ip=%s", bucket, _client_ip(request))
+        raise HTTPException(429, "too_many_attempts")
+    hits.append(now)
+    _login_attempts[key] = hits
+
+
 @app.get("/auth/login")
 async def auth_login(request: Request):
     if AUTH_MODE == "name":
@@ -168,6 +271,17 @@ class NameLogin(BaseModel):
     name: str
 
 
+# Name-mode has no password, no email — just whatever the bettor types, normalized to a slug
+# (rules.name_slug). Two different people can type names that normalize to the same slug (extra
+# space, punctuation, casing) and would otherwise silently become the SAME identity: same session
+# key, same bet slot, same payout row. store.name_on_file() catches this once a bet exists under
+# the key, but two people who both log in before either has bet yet would slip past a DB-only
+# check — so also track the first name seen per key in-process. Same single-process assumption as
+# the SSE broadcaster and the rate limiter (no --workers in the Dockerfile CMD); resets on a
+# restart, which only means a stale claim is forgotten, never that an active session breaks.
+_name_claims: "dict[str, str]" = {}
+
+
 @app.post("/auth/name")
 def auth_name(request: Request, body: NameLogin):
     """Race-morning fallback identity: first name = identity. Only active in AUTH_MODE=name."""
@@ -176,7 +290,16 @@ def auth_name(request: Request, body: NameLogin):
     name = body.name.strip()
     if not (2 <= len(name) <= 40):
         raise HTTPException(400, "bad_name")
-    request.session["user"] = {"key": _name_slug(name), "name": name}
+    key = rules.name_slug(name)
+    on_file = store.name_on_file(key) or _name_claims.get(key)
+    if on_file is not None and on_file.strip().lower() != name.lower():
+        # Same normalized slug, different typed name (e.g. "Rahul Sharma" vs "Rahul  Sharma!!"
+        # both -> name:rahulsharma) — plausibly a DIFFERENT person, not the same one logging in
+        # again. Refuse rather than silently handing this session someone else's identity, bets,
+        # and payout; the bettor retypes with a distinguishing detail (surname, initial) instead.
+        raise HTTPException(409, "name_taken")
+    _name_claims.setdefault(key, name)
+    request.session["user"] = {"key": key, "name": name}
     return {"ok": True}
 
 
@@ -192,6 +315,7 @@ def auth_test(request: Request, body: TestLogin):
     expected = os.environ.get("TEST_LOGIN_PASSWORD", "")
     if not expected:
         raise HTTPException(404)
+    _check_rate_limit(request, "test")
     if body.password != expected:
         raise HTTPException(403, "wrong_password")
     email = body.email.lower().strip()
@@ -211,7 +335,9 @@ def auth_admin(request: Request, body: AdminLogin):
     expected = os.environ.get("ADMIN_PASSWORD", "")
     if not expected:
         raise HTTPException(404)
+    _check_rate_limit(request, "admin")
     if body.password != expected:
+        log.warning("admin login: wrong password from %s", _client_ip(request))
         raise HTTPException(403, "wrong_password")
     request.session["admin"] = True
     if not request.session.get("user"):
@@ -251,7 +377,13 @@ def _is_arbitrage(key, market, outcome, amount, laps):
 # already lives (api_state/api_settlement) with no duplicate logic to keep in sync. Requires a
 # single uvicorn process (true here — no --workers flag in the Dockerfile CMD); multiple workers
 # would each hold their own subscriber set and miss each other's events.
-_subscribers: "set[asyncio.Queue]" = set()
+#
+# Each entry pairs a subscriber's queue with the event loop it was created on. Mutating routes are
+# sync `def`s that FastAPI runs in a worker thread, not the event loop thread — asyncio.Queue is
+# documented as NOT thread-safe, so calling q.put_nowait() directly from _notify() (a non-loop
+# thread) is a data race on the queue's internal state. loop.call_soon_threadsafe() is the
+# sanctioned way to schedule loop-affecting work from another thread.
+_subscribers: "set[tuple[asyncio.Queue, asyncio.AbstractEventLoop]]" = set()
 
 # api_approve's before/approve/after/suspend-decision sequence is three separate DB transactions,
 # not one atomic unit. Sync routes run in FastAPI's threadpool, so two concurrent Approve calls on
@@ -261,20 +393,40 @@ _subscribers: "set[asyncio.Queue]" = set()
 # at this app's scale (one admin, clicking buttons) and removes the race entirely.
 _approve_lock = threading.Lock()
 
+# store.submit_bet() is an UPDATE-then-INSERT (cancel any existing pending row, then insert the
+# new one) across two statements in one transaction — safe on SQLite (whole-database write lock
+# serializes the two transactions outright) but NOT on Postgres (prod): under READ COMMITTED, an
+# UPDATE that matches zero rows takes no lock, so two near-simultaneous first-time submits from
+# the same person in the same market (double-tap, retried request) can both see "nothing pending
+# yet" and both INSERT, leaving two live 'pending' rows for one person. Settlement is never at
+# risk (approve_bet supersedes on approval regardless), but the admin's pending queue and cash-to-
+# collect math would double-count until the duplicate is manually rejected. Same fix shape as
+# _approve_lock, kept as a separate lock since it guards an unrelated statement pair.
+_submit_lock = threading.Lock()
+
+
+def _put_nowait_safe(q: asyncio.Queue):
+    try:
+        q.put_nowait(1)
+    except asyncio.QueueFull:
+        pass  # a ping is already queued for this client — coalesces fine, next fetch is fresh
+
 
 def _notify():
-    for q in list(_subscribers):
+    for q, loop in list(_subscribers):
         try:
-            q.put_nowait(1)
-        except asyncio.QueueFull:
-            pass  # a ping is already queued for this client — coalesces fine, next fetch is fresh
+            loop.call_soon_threadsafe(_put_nowait_safe, q)
+        except RuntimeError:
+            pass  # loop already closed (shutdown) — subscriber is gone anyway
 
 
 @app.get("/api/stream")
 async def api_stream(request: Request):
     _require(request)
     q: asyncio.Queue = asyncio.Queue(maxsize=1)
-    _subscribers.add(q)
+    loop = asyncio.get_running_loop()
+    entry = (q, loop)
+    _subscribers.add(entry)
 
     async def gen():
         try:
@@ -288,13 +440,25 @@ async def api_stream(request: Request):
                 except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"  # comment ping — holds the connection through proxies
         finally:
-            _subscribers.discard(q)
+            _subscribers.discard(entry)
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ── public API ───────────────────────────────────────────────────────────────────────────────────
+
+@app.get("/healthz")
+def healthz():
+    """Unauthenticated liveness/readiness probe — process up AND database reachable. For
+    Railway's own health checks and any external uptime monitor. Must stay registered ahead of
+    the SPA catch-all route below (route order matters: the catch-all matches any path)."""
+    try:
+        store.get_race()
+    except Exception:  # noqa: BLE001 — any DB failure means "not ready", detail is irrelevant here
+        return JSONResponse({"ok": False}, status_code=503)
+    return {"ok": True}
+
 
 @app.get("/api/config")
 def api_config():
@@ -399,16 +563,19 @@ def api_submit_bet(request: Request, body: BetIn):
     u = _require(request)
     if _betting_closed_by_deadline():
         raise HTTPException(400, "betting_closed")
-    r = store.get_race()
-    mine = store.current_approved(u["key"], body.market)
-    ok, reason = rules.can_submit(body.market, r["phase"], body.outcome, body.amount,
-                                  laps=r["laps"], current_outcome=mine and mine["outcome"],
-                                  suspended=body.market in r["suspended"])
-    if not ok:
-        raise HTTPException(400, reason)
-    if _is_arbitrage(u["key"], body.market, body.outcome, body.amount, r["laps"]):
-        raise HTTPException(409, "arbitrage_bet")
-    bet_id = store.submit_bet(u["key"], u["name"], body.market, body.outcome, body.amount)
+    # See _submit_lock docstring: serializes the read-then-cancel-then-insert so two concurrent
+    # submits from the same person/market can never both land as live 'pending' rows.
+    with _submit_lock:
+        r = store.get_race()
+        mine = store.current_approved(u["key"], body.market)
+        ok, reason = rules.can_submit(body.market, r["phase"], body.outcome, body.amount,
+                                      laps=r["laps"], current_outcome=mine and mine["outcome"],
+                                      suspended=body.market in r["suspended"])
+        if not ok:
+            raise HTTPException(400, reason)
+        if _is_arbitrage(u["key"], body.market, body.outcome, body.amount, r["laps"]):
+            raise HTTPException(409, "arbitrage_bet")
+        bet_id = store.submit_bet(u["key"], u["name"], body.market, body.outcome, body.amount)
     _notify()
     return {"ok": True, "id": bet_id, "status": "pending"}
 
@@ -488,6 +655,8 @@ def api_approve(request: Request, bet_id: int):
             raise HTTPException(400, reason)
         if _is_arbitrage(p["key"], p["market"], p["outcome"], p["amount"], r["laps"]):
             store.reject_bet(bet_id, u["key"], note="auto-rejected on approve: arbitrage_bet")
+            log.warning("arbitrage bet auto-rejected AT APPROVE: key=%s market=%s bet_id=%s",
+                       p["key"], p["market"], bet_id)
             _notify()
             raise HTTPException(409, "arbitrage_bet")
         # Circuit breaker: a thin market can be swung 5-10x by one realistically-sized bet. Compare
@@ -499,7 +668,15 @@ def api_approve(request: Request, bet_id: int):
         # the market for a human. One synchronous check, no polling: this is as fast as it gets — a
         # background loop would only add latency for a number we already have in hand.
         before = rules.market_book(p["market"], store.approved_bets(p["market"]))
-        store.approve_bet(bet_id, u["key"])
+        try:
+            store.approve_bet(bet_id, u["key"])
+        except IntegrityError:
+            # Belt-and-suspenders: the one_approved_per_person_market DB index (store.init) is the
+            # last line of defense if _approve_lock is ever bypassed or a second process exists —
+            # should be unreachable in normal operation, but a clean 409 beats a raw 500 either way.
+            log.error("approve_bet hit one_approved_per_person_market constraint: bet_id=%s key=%s market=%s",
+                      bet_id, p["key"], p["market"])
+            raise HTTPException(409, "already_approved")
         after = rules.market_book(p["market"], store.approved_bets(p["market"]))
         swing_ratio, swing_outcome = rules.odds_swing(p["market"], before, after, laps=r["laps"])
         suspended_now = False
@@ -509,9 +686,19 @@ def api_approve(request: Request, bet_id: int):
             floor = rules.house_floor(store.approved_by_market(), r["laps"])
             if floor >= 0:
                 swing_cleared = True  # house safe regardless of outcome — nothing to protect
+                log.info("swing cleared: market=%s outcome=%s ratio=%.2f floor=%d",
+                         p["market"], swing_outcome, swing_ratio, floor)
             else:
                 store.suspend_market(p["market"])
                 suspended_now = True
+                log.warning("market AUTO-SUSPENDED: market=%s outcome=%s ratio=%.2f floor=%d bet_id=%s",
+                           p["market"], swing_outcome, swing_ratio, floor, bet_id)
+                _alert_slack(
+                    f":rotating_light: *Market auto-suspended* — `{p['market']}`\n"
+                    f"Outcome `{swing_outcome}` swung {swing_ratio:.2f}x on bet #{bet_id}, "
+                    f"projected house floor {floor:+d}. Betting paused on this market only — "
+                    f"review and resume from the admin panel."
+                )
         _notify()
         out = {"ok": True}
         if suspended_now:
@@ -546,7 +733,7 @@ def api_manual(request: Request, body: ManualBet):
         raise HTTPException(400, "bad_market")
     if body.amount > 0 and body.outcome not in {o for o, _ in m["outcomes"]}:
         raise HTTPException(400, "bad_outcome")
-    if body.amount < 0 or not (2 <= len(body.name.strip()) <= 40):
+    if body.amount < 0 or body.amount > rules.MAX_BET_AMOUNT or not (2 <= len(body.name.strip()) <= 40):
         raise HTTPException(400, "bad_input")
     if store.load_settlement() is not None:
         raise HTTPException(400, "already_settled")
@@ -649,10 +836,11 @@ def api_void(request: Request, body: VoidBet):
 @app.post("/api/admin/markets/{market_id}/resume")
 def api_resume_market(request: Request, market_id: str):
     """Clears a circuit-breaker suspension so the market accepts bets again."""
-    _require_owner(request)
+    u = _require_owner(request)
     if market_id not in rules.MARKET_BY_ID:
         raise HTTPException(400, "bad_market")
     store.resume_market(market_id)
+    log.info("market manually resumed: market=%s by=%s", market_id, u["key"])
     _notify()
     return {"ok": True}
 
@@ -662,10 +850,11 @@ def api_suspend_market(request: Request, market_id: str):
     """Manual override: the automatic breaker only trips on a NEW approval that crosses the
     ratio, so it can't retroactively flag a market that already swung before this check existed
     (or before liquidity was topped up). This lets the organiser pause one by hand."""
-    _require_owner(request)
+    u = _require_owner(request)
     if market_id not in rules.MARKET_BY_ID:
         raise HTTPException(400, "bad_market")
     store.suspend_market(market_id)
+    log.warning("market manually suspended: market=%s by=%s", market_id, u["key"])
     _notify()
     return {"ok": True}
 
@@ -677,7 +866,7 @@ def api_recheck_markets(request: Request):
     paused by hand — e.g. after liquidity was topped up, or for markets suspended before this
     check existed. One-shot, synchronous, no polling: if you want a market to stay paused for a
     reason unrelated to money (e.g. reviewing something), don't call this while it matters."""
-    u = _require_owner(request)
+    _require_owner(request)
     r = store.get_race()
     floor = rules.house_floor(store.approved_by_market(), r["laps"])
     cleared = []
@@ -740,6 +929,9 @@ def api_settle(request: Request):
     if not store.save_settlement(result):
         raise HTTPException(400, "already_settled")
     store.set_race("settled", r["laps"])
+    log.info("RACE SETTLED: winner=%s house_take=%d swimmer_take=%d total_pool=%d by=%s",
+             result["winner"], result["house_take"], result["swimmer_take"],
+             result["total_pool"], u["key"])
     _notify()
     return result
 
@@ -788,3 +980,40 @@ def spa(full_path: str):
 
 
 store.init()
+
+
+# ── Suspended-market watchdog ────────────────────────────────────────────────────────────────────
+# api_approve already alerts the instant a market auto-suspends (event-driven, zero latency). What
+# that can't catch: a market that's SAT suspended for the last 20 minutes because everyone's
+# attention moved on. This is the other half — a periodic nudge, cheap and simple since there's
+# only ever one process (R-8): a plain daemon thread, no scheduler/cron dependency needed. Fires at
+# most once per _SUSPENDED_NUDGE_INTERVAL_S per still-suspended set, not every poll, so it reminds
+# rather than spams.
+_SUSPENDED_WATCHDOG_POLL_S = 120
+_SUSPENDED_NUDGE_INTERVAL_S = 900
+_last_suspended_nudge = 0.0
+
+
+def _suspended_watchdog() -> None:
+    global _last_suspended_nudge
+    while True:
+        time.sleep(_SUSPENDED_WATCHDOG_POLL_S)
+        try:
+            suspended = store.get_race()["suspended"]
+        except Exception:
+            log.exception("suspended-market watchdog: could not read race state")
+            continue
+        if not suspended:
+            continue
+        now = time.time()
+        if now - _last_suspended_nudge > _SUSPENDED_NUDGE_INTERVAL_S:
+            _last_suspended_nudge = now
+            log.warning("suspended-market watchdog nudge: still suspended=%s", suspended)
+            _alert_slack(
+                f":warning: *Still suspended*: `{', '.join(suspended)}` — no admin action yet "
+                f"(checked every {_SUSPENDED_WATCHDOG_POLL_S // 60} min). Resume from the admin "
+                f"panel once reviewed, or leave paused if still investigating."
+            )
+
+
+threading.Thread(target=_suspended_watchdog, daemon=True, name="suspended-watchdog").start()

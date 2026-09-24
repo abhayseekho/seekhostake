@@ -36,6 +36,8 @@ const REASON_TEXT = {
   arbitrage_bet: "This combination would guarantee you a profit regardless of outcome. One of your bets must carry risk.",
   market_suspended: "This market is paused for review after an unusual odds swing. Check with the organiser.",
   betting_closed: "Betting is closed for this event.",
+  name_taken: "That name is already registered and doesn't quite match — add your surname or an initial to tell you apart.",
+  too_many_attempts: "Too many attempts. Wait a few minutes and try again.",
 };
 
 // ── login ────────────────────────────────────────────────────────────────────────────────────────
@@ -50,17 +52,19 @@ function Login({ authMode, testLogin, deadlineLabel, onNamed }) {
   const [tPw, setTPw] = useState("");
   const submitTest = async () => {
     const r = await post("/auth/test", { email: tEmail, password: tPw });
-    if (r._error) setErr(r._error === "not_allowed" ? "Email must be @seekhoapp.com." : "Wrong test password.");
-    else onNamed();
+    if (r._error) {
+      setErr(r._error === "not_allowed" ? "Email must be @seekhoapp.com."
+        : r._error === "too_many_attempts" ? REASON_TEXT.too_many_attempts : "Wrong test password.");
+    } else onNamed();
   };
   const submitName = async () => {
     const r = await post("/auth/name", { name });
-    if (r._error) setErr(r._error === "bad_name" ? "Enter your real name (2–40 chars)." : r._error);
+    if (r._error) setErr(r._error === "bad_name" ? "Enter your real name (2–40 chars)." : (REASON_TEXT[r._error] || r._error));
     else onNamed();
   };
   const submitAdmin = async () => {
     const r = await post("/auth/admin", { password: pw });
-    if (r._error) setErr("Wrong admin password.");
+    if (r._error) setErr(r._error === "too_many_attempts" ? REASON_TEXT.too_many_attempts : "Wrong admin password.");
     else onNamed();
   };
   return (

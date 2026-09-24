@@ -35,6 +35,8 @@ from seed import SEED_BETS
 def fresh_db():
     store.meta.drop_all(store.engine)
     store.init()
+    api._login_attempts.clear()  # module-global rate-limit state — isolate tests from each other
+    api._name_claims.clear()     # module-global name-collision memory — same reason
     yield
 
 
@@ -605,3 +607,140 @@ def test_concurrent_approvals_on_same_market_dont_lose_either_bet():
     approved = store.approved_bets("lap1")
     assert {b["display_name"] for b in approved} == {"Alice Racer", "Bob Punter"}
     assert sum(b["amount"] for b in approved) == 1000  # neither approval lost the other's write
+
+
+def test_concurrent_submits_same_person_same_market_land_as_exactly_one_pending():
+    """Regression for a review finding: store.submit_bet() is an update-then-insert across two
+    statements. On Postgres (prod's real DB) two near-simultaneous first-time submits from the
+    same person/market can both see 'nothing pending yet' and both INSERT — two live 'pending'
+    rows for one person, doubling the cashier's apparent cash_to_collect until manually rejected.
+    (SQLite's coarse whole-database write lock happens to serialize the two transactions outright,
+    which is exactly why this doesn't reproduce locally without the fix under test — _submit_lock
+    makes the guarantee explicit at the app layer instead of relying on which DB is behind it.)
+    Fire two genuinely concurrent submits (a threading.Barrier forces them to start in the same
+    instant) and assert exactly one live pending row survives, matching the documented supersede
+    semantics regardless of which one the lock let through first."""
+    import threading
+
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice_a, alice_b = user_client("Alice"), user_client("Alice")  # same person, two sessions
+
+    barrier = threading.Barrier(2)
+    results = [None, None]
+
+    def submit(client, i, amount):
+        barrier.wait(timeout=5)
+        results[i] = client.post("/api/bets", json={"market": "lap1", "outcome": "khuseel",
+                                                     "amount": amount})
+
+    t1 = threading.Thread(target=submit, args=(alice_a, 0, 500))
+    t2 = threading.Thread(target=submit, args=(alice_b, 1, 600))
+    t1.start(); t2.start()
+    t1.join(timeout=10); t2.join(timeout=10)
+
+    assert not t1.is_alive() and not t2.is_alive(), "a thread is still blocked -- possible deadlock"
+    assert results[0] is not None and results[1] is not None
+    assert results[0].status_code == 200, results[0].json()
+    assert results[1].status_code == 200, results[1].json()
+
+    pending = [p for p in store.pending_bets() if p["key"] == "name:alice" and p["market"] == "lap1"]
+    assert len(pending) == 1, f"expected exactly one live pending row, found {len(pending)}"
+    assert pending[0]["amount"] in (500, 600)
+
+
+# ── amount bounds, name-mode identity collisions, headers, rate limit, health ───────────────────
+
+def test_bet_amount_above_max_rejected():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice = user_client("Alice")
+    r = alice.post("/api/bets", json={"market": "match", "outcome": "khuseel",
+                                      "amount": E.MAX_BET_AMOUNT + 1})
+    assert r.status_code == 400 and r.json()["detail"] == "bad_amount"
+    r = alice.post("/api/bets", json={"market": "match", "outcome": "khuseel",
+                                      "amount": E.MAX_BET_AMOUNT})
+    assert r.status_code == 200
+
+
+def test_manual_bet_above_max_rejected():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    r = admin.post("/api/admin/bets/manual",
+                   json={"name": "Walk-in", "market": "match", "outcome": "bansod",
+                         "amount": E.MAX_BET_AMOUNT + 1})
+    assert r.status_code == 400 and r.json()["detail"] == "bad_input"
+
+
+def test_name_collision_blocked_after_bet_exists():
+    """Two different people whose typed names normalize to the same slug must not silently
+    become one identity once the first person already has a bet on record."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    first = user_client("Rahul Sharma")
+    first.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 200})
+
+    c = TestClient(api.app)
+    r = c.post("/auth/name", json={"name": "Rahul  Sharma"})  # double space -> same slug
+    assert r.status_code == 409 and r.json()["detail"] == "name_taken"
+
+
+def test_name_collision_blocked_before_any_bet_exists():
+    """Same guard must fire even when NEITHER person has placed a bet yet — the gap a DB-only
+    check (store.name_on_file) alone would miss, closed by the in-process _name_claims map."""
+    user_client("Priya Verma")  # logs in, no bet placed yet
+    c = TestClient(api.app)
+    r = c.post("/auth/name", json={"name": "PRIYA VERMA!!"})  # same slug, still no bet on file
+    assert r.status_code == 409 and r.json()["detail"] == "name_taken"
+
+
+def test_name_relogin_with_identical_name_not_blocked():
+    """The same person on a new device/session, typing their name exactly as before, must not be
+    mistaken for a collision."""
+    user_client("Alice")
+    c = TestClient(api.app)
+    r = c.post("/auth/name", json={"name": "Alice"})
+    assert r.status_code == 200
+
+
+def test_admin_manual_entry_and_name_login_share_identity():
+    """The WhatsApp pre-race book is entered by the admin (store.admin_manual_bet); if that same
+    person later logs in themselves via name-mode with the same name, they must land on the SAME
+    identity and see their own existing bet — not a fresh, empty one. Regression for the slug
+    consolidation: both paths now key through the one engine.name_slug()."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    admin.post("/api/admin/bets/manual",
+              json={"name": "Deepak Rao", "market": "match", "outcome": "khuseel", "amount": 900})
+    deepak = user_client("Deepak Rao")
+    mine = next(m for m in deepak.get("/api/state").json()["markets"]
+               if m["id"] == "match")["my_bet"]
+    assert mine == {"outcome": "khuseel", "amount": 900}
+
+
+def test_security_headers_present():
+    c = TestClient(api.app)
+    r = c.get("/api/config")
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["x-frame-options"] == "DENY"
+    assert r.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert "default-src 'self'" in r.headers["content-security-policy"]
+    assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+    # ALLOW_HTTP=1 in this test env (module setup, for LAN-style plain-http testing) -> HSTS,
+    # which would force https on the next request, must NOT be sent.
+    assert "strict-transport-security" not in r.headers
+
+
+def test_rate_limit_trips_admin_login_after_threshold():
+    c = TestClient(api.app)
+    for _ in range(api._RATE_LIMIT_MAX):
+        r = c.post("/auth/admin", json={"password": "wrong"})
+        assert r.status_code == 403  # wrong password, but still a counted attempt
+    r = c.post("/auth/admin", json={"password": "e2e-test-admin-pw"})  # correct — but over budget
+    assert r.status_code == 429 and r.json()["detail"] == "too_many_attempts"
+
+
+def test_healthz_ok():
+    c = TestClient(api.app)
+    r = c.get("/healthz")
+    assert r.status_code == 200 and r.json() == {"ok": True}

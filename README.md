@@ -8,6 +8,9 @@ settlement asserts payouts sum exactly to the pool.
 swimmer gets 30% of the losing pot + rounding remainder. Latest approved bet per person binds.
 Betting open pre-race + break 1 only; no side-switching after lap 1; book closes when lap 2 starts.
 
+**Deeper docs:** architecture, risk register, ops runbook, test strategy, and release checklist
+live in [`docs/`](./docs/) — read `docs/release-checklist.md` before running this for a real event.
+
 ## Local dev
 
 ```bash

@@ -544,6 +544,21 @@ function Admin({ state, refresh }) {
 
       <div>
         <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
+          Market control</h3>
+        <div className="flex flex-wrap gap-1.5">
+          {markets.map((m) => (
+            <button key={m.id}
+              onClick={() => act(() => post(`/api/admin/markets/${m.id}/${m.suspended ? "resume" : "suspend"}`))}
+              className={`text-[11px] rounded-lg px-2.5 py-1 border ${m.suspended
+                ? "border-gold/40 bg-gold/10 text-gold" : "border-edge text-faint hover:text-dim"}`}>
+              {m.name} {m.suspended ? "· Resume" : "· Pause"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-faint mb-2">
           Pending · collect cash first ({pending.length})</h3>
         {pending.length === 0 && <p className="text-faint text-sm">No pending requests.</p>}
         {pending.map((p) => {

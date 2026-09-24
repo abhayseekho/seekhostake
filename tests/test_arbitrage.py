@@ -167,7 +167,16 @@ def test_person_floor_flags_constructed_covering_arbitrage():
     is generous enough: match=Khuseel + Lap1=Bansod + Comeback=Yes is a set of three bets whose
     winning outcomes UNION to all 6 race scripts (in every script, at least one leg wins) — see
     module docstring finding #3. Against thin, uncorrelated house-only liquidity, ₹1 on each leg
-    nets a guaranteed profit in all 6 scripts."""
+    nets a guaranteed profit in all 6 scripts.
+
+    IMPORTANT (post payout-cap, see engine.MAX_PAYOUT_MULT): before the 7x payout cap existed,
+    this exact construction netted +1328 — an enormous 1300x return on a ₹3 total stake, entirely
+    funded by the ₹6000 in synthetic seed money. The cap now clips each leg's payout to 7x its own
+    stake (₹7 on a ₹1 stake), which crushes the exploit to a bare +4 — the cap absorbs ~99.7% of
+    what would have been the arbitrageur's profit into house_take instead (verified below). The
+    residual +4 is still technically positive, which is exactly why the SEPARATE arbitrage guard
+    (api._is_arbitrage, exercised over real HTTP in test_e2e.py) remains necessary: the payout cap
+    makes thin-market arbitrage nearly worthless, it does not make it impossible."""
     book = {
         "match": [{"key": "seed_m", "display_name": "S", "outcome": "bansod", "amount": 2000},
                   {"key": "p", "display_name": "P", "outcome": "khuseel", "amount": 1}],
@@ -177,11 +186,11 @@ def test_person_floor_flags_constructed_covering_arbitrage():
                      {"key": "p", "display_name": "P", "outcome": "yes", "amount": 1}],
     }
     floor = E.person_floor(book, "p")
-    assert floor > 0, "expected the constructed covering combo to be a genuine arbitrage"
-    # and the house survives it in every single script — the arb draws from the seed money,
-    # never from a negative house_take:
+    assert floor == 4, f"expected the capped residual to be exactly +4, got {floor}"
+    # and the house not only survives it, it now captures the overwhelming majority of what the
+    # exploit would otherwise have paid out — the cap redirected the profit, not just blocked it:
     for s in E.race_scripts():
-        assert E.settle_all(book, s)["house_take"] >= 0
+        assert E.settle_all(book, s)["house_take"] >= 1600  # was 201-300 pre-cap; now 1624-5412
 
 
 def test_distance_yes_and_comeback_no_form_a_natural_covering_pair():

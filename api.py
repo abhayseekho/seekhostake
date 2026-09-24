@@ -611,6 +611,19 @@ def api_resume_market(request: Request, market_id: str):
     return {"ok": True}
 
 
+@app.post("/api/admin/markets/{market_id}/suspend")
+def api_suspend_market(request: Request, market_id: str):
+    """Manual override: the automatic breaker only trips on a NEW approval that crosses the
+    ratio, so it can't retroactively flag a market that already swung before this check existed
+    (or before liquidity was topped up). This lets the organiser pause one by hand."""
+    _require_owner(request)
+    if market_id not in rules.MARKET_BY_ID:
+        raise HTTPException(400, "bad_market")
+    store.suspend_market(market_id)
+    _notify()
+    return {"ok": True}
+
+
 @app.post("/api/admin/race/start-lap")
 def api_start_lap(request: Request):
     u = _require_owner(request)

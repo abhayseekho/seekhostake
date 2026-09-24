@@ -34,8 +34,11 @@ This checklist has two parts. **Use Part A now.** Part B is a reference for a hy
 - [ ] CI (`.github/workflows/ci.yml`, added in the second review pass) is green on the commit about to be deployed — it runs the full pytest suite and the frontend build, but only ON PUSH; it does not block Railway's auto-deploy from proceeding on a red run, since there's no branch-protection/required-check wired up yet. Check the Actions tab, don't assume. *(risk R-7 — closes the "not automated as a gate" half; the staging-environment half is still open)*
 
 ### Monitoring during the live window
-- [ ] `SLACK_WEBHOOK_URL` set in Railway — without it, auto-suspend / unhandled-error / stuck-suspended alerts stay log-only. *(risk R-11, runbook §4/§8)*
-- [ ] A human (not necessarily the admin) is still watching `house.floor` and the suspended-markets panel throughout every live betting window — Slack alerting narrows this risk, it doesn't remove the need for a human in the loop (nothing watches the process itself if it dies outright; see runbook §4). *(risk R-11)*
+- [x] `SLACK_WEBHOOK_URL` set in Railway, posting to `#seekhostake-alerts` — **done and verified 24 Sept** (confirmed the env var directly on Railway and read the test message back via the Slack API, not just trusted the webhook's 200). Covers market auto-suspend (instant), unhandled server errors (5-min dedup), and a market that stays suspended (15-min nudge). *(risk R-11, runbook §4/§8)*
+- [ ] **External uptime monitor (UptimeRobot or Railway's own alerting) polling `/healthz`** — the one gap Slack alerting above cannot close: if the process dies outright rather than throwing a handled exception, all three triggers above die with it, since they run inside that same process. ~5 min, no code change. *(risk R-11, runbook §4)*
+- [ ] At least one additional trusted person added to `OWNER_EMAILS` — even with alerting live, only Abhay can currently act on an alert. *(risk R-4 — same item as under "Access & operational resilience" above; listed here too since it's the direct answer to "alerting fires, then what")*
+- [ ] A human (not necessarily the admin) is still watching `house.floor` and the suspended-markets panel throughout every live betting window — Slack alerting narrows this risk, it doesn't remove the need for a human in the loop. *(risk R-11)*
+- [ ] *(Optional, can slip to next event)* Settlement-anomaly / reconciliation-drift check beyond the existing suspension-triggered alerts — deprioritized because the runbook's post-settlement reconciliation (§6) already happens manually, same day, right after settlement; the "goes unnoticed for hours" failure mode automated alerting usually targets doesn't really apply to a one-shot same-day event. *(architecture §14)*
 
 ---
 

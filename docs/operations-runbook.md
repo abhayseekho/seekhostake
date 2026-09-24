@@ -69,7 +69,7 @@ If the bad commit already caused data corruption (not just a code bug), a code r
 
 **What exists today:**
 - `GET /healthz` — unauthenticated, checks DB reachability, returns `{"ok": true}`/200 or `{"ok": false}`/503. Added in the second review pass; suitable for Railway's own health checking and any future external uptime monitor (e.g. UptimeRobot hitting this URL every minute is a five-minute setup and a real improvement over "nothing," complementary to the Slack alerting below, not a substitute for it — `/healthz` only tells you the process is up, not that it's a process that would ever fire an alert if something inside it broke).
-- **Slack alerting (third review pass, live once `SLACK_WEBHOOK_URL` is set — see §8):** three triggers, all event-driven rather than a polling loop for the two that can be, since the moment of concern is already computed synchronously where it happens —
+- **Slack alerting — live and verified (posts to `#seekhostake-alerts`, see §8):** three triggers, event-driven rather than a polling loop for the two that can be, since the moment of concern is already computed synchronously where it happens —
   1. A market auto-suspends (`api_approve`'s circuit breaker) — fires the instant it happens.
   2. Any unhandled server exception, anywhere — a global FastAPI exception handler, deduped per-endpoint-path to one alert per 5 minutes so a repeatedly-failing endpoint pings once, not on every request.
   3. A market that's *stayed* suspended — the one case that genuinely needs polling, since nothing else re-triggers on it: a background thread checks every 2 minutes and nudges Slack at most once per 15 minutes per still-suspended set.
@@ -170,6 +170,6 @@ Run this before lap 1 starts, every event:
 | `ADMIN_PASSWORD` | Railway env var (name-mode fallback — currently dormant while `AUTH_MODE=oauth`) | Stale credential — consider rotating or removing if name-mode is never used again |
 | `TEST_LOGIN_PASSWORD` | Railway env var, **currently empty** (feature dormant) | Confirmed empty as of this review — recheck before every event per §4 |
 | `OWNER_EMAILS` | Railway env var, currently one address | See R-4 — add a second trusted admin before the event as a break-glass measure |
-| `SLACK_WEBHOOK_URL` | Railway env var, **not yet set** | Slack Incoming Webhook URL for the alerting channel (risk R-11). App runs fine without it — alerts just stay log-only until it's added. Create at `api.slack.com/apps` → an app → Incoming Webhooks → Add New Webhook to Workspace. |
+| `SLACK_WEBHOOK_URL` | Railway env var, **set and verified live** (24 Sept) | Posts to `#seekhostake-alerts`. Verified by reading the channel back via the Slack API, not just trusting the webhook's 200. No rotation schedule — rotate if the channel or app is ever recreated. |
 
 **Nothing above should ever be committed to the repository.** This has held so far — verify it continues to hold on every commit touching `api.py` or deployment config.

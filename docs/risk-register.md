@@ -29,11 +29,11 @@ None of the above required a database migration beyond the one already in flight
 
 ## Update — 24 Sept 2026, third pass: Slack alerting + docs lockdown
 
-- **R-11 (no automated alerting) — narrowed, not closed.** Added `_alert_slack()`, a fire-and-forget Slack Incoming Webhook post (`SLACK_WEBHOOK_URL` env var; no-op, logs-only, when unset). Wired to two event-driven triggers, not a polling loop, since both moments are already computed synchronously where they occur: (1) a market auto-suspending in `api_approve` (the exact `house_floor < 0` condition this risk names), and (2) any unhandled exception anywhere in the app (new global `@app.exception_handler(Exception)`, path-keyed 5-minute dedup so a repeatedly-failing endpoint pings once, not on every hit). **What this does not cover, so R-11 stays open at lower priority:** a stuck-suspended market that nobody touches (no periodic re-check — only alerts at the moment of suspension), a settlement anomaly, or the process silently dying (needs an external uptime check against `/healthz`, not more code inside the same process that would die with it). Downgraded High → **Medium**, P1 → **P2**.
+- **R-11 (no automated alerting) — narrowed, not closed.** Added `_alert_slack()`, a fire-and-forget Slack Incoming Webhook post (`SLACK_WEBHOOK_URL` env var; no-op, logs-only, when unset). Wired to three triggers: (1) a market auto-suspending in `api_approve` (event-driven, the exact `house_floor < 0` condition this risk names), (2) any unhandled exception anywhere in the app (global `@app.exception_handler(Exception)`, path-keyed 5-minute dedup so a repeatedly-failing endpoint pings once, not on every hit), and (3) a market that *stays* suspended (the one case needing a poll — a daemon thread checks every 2 min, nudges at most once per 15 min per still-suspended set, closing the "20 minutes with nobody looking" gap this section originally flagged as the top open item). **What this still does not cover, so R-11 stays open at lower priority:** a settlement anomaly with no suspension event, and — the more fundamental gap — the process dying outright rather than throwing a handled exception, since all three triggers above run inside that same process and die with it; only an external uptime check against `/healthz` closes that. Downgraded High → **Medium**, P1 → **P2**.
 - **R-14 (`/docs`/`/openapi.json` unauthenticated) — RESOLVED.** `docs_url`/`redoc_url`/`openapi_url` all `None` unless `SWIMBET_DEV=1`. Verified both ways (DEV: reachable; prod-mode env: all three `None`) before landing.
 - **R-3 addendum — approve-time constraint violation now handled cleanly.** The `one_approved_per_person_market` DB index from the prior pass had no corresponding application-level handling — a hit would have surfaced as a raw 500. `api_approve` now catches `IntegrityError` specifically and returns `409 already_approved`. Should be unreachable given `_approve_lock`; this is the "belt" to the lock's "suspenders," not a new mitigation layer on its own.
 
-**Action still open, and the highest-value next step for R-11 specifically:** a periodic (not just event-triggered) check of `house_floor` and the suspended-markets list during a live betting window, so a market that's been sitting suspended for 20 minutes with nobody looking gets a nudge — today's fix only fires at the instant of suspension.
+**Update — 24 Sept 2026, fourth pass: `SLACK_WEBHOOK_URL` set and verified live.** Confirmed directly against Railway (`railway variable list`) and by reading `#seekhostake-alerts` back via the Slack API — the test post from webhook setup is actually sitting in the channel, not just accepted with a 200. All three triggers above are now live, not log-only. See `docs/release-checklist.md` for the remaining pre-Sunday action plan (external `/healthz` monitor, R-4 second admin) this pass produced.
 
 ---
 
@@ -51,7 +51,7 @@ None of the above required a database migration beyond the one already in flight
 | R-8 | Technical | In-memory SSE subscriber set breaks under >1 process/instance | Medium (N/A at current scale) | Documented; single-instance today | P3 (P0 if scaled horizontally) |
 | R-9 | Security | Test-login auth-bypass code path (`/auth/test`) still exists in source, currently dormant | Medium | `TEST_LOGIN_PASSWORD` env var confirmed empty (404s) | P2 |
 | R-10 | Technical | No idempotency key on `POST /api/bets` — retry/double-submit risk | Medium | UI disables button after submit (not server-enforced) | P1 |
-| R-11 | Operational | No automated alerting — every incident today was caught by a human noticing, not a system signal | High | None | P1 |
+| R-11 | Operational | Automated alerting exists for suspend/error/stuck-suspended, but nothing external notices if the process itself dies | Medium | Slack alerting live (3 triggers, verified) | P2 |
 | R-12 | Technical | Singleton schema (`race.id=1`, `settlements.id=1`) blocks a second event and has no isolation if ever violated | Medium | None — architectural | P1 |
 | R-13 | Compliance | No data retention / deletion policy stated anywhere | Low | Minimal PII footprint reduces impact | P2 |
 | R-14 | Security | OpenAPI docs (`/docs`, `/openapi.json`) reachable unauthenticated in production | Low-Medium | None | P2 |
@@ -138,17 +138,17 @@ None of the above required a database migration beyond the one already in flight
 
 ---
 
-### R-11 — No automated alerting (High, P1)
+### R-11 — Automated alerting exists, process-liveness monitoring doesn't (Medium, P2)
 
-**Description.** Every incident resolved today — including the live odds-sensitivity incident that prompted the circuit breaker work — was detected because a human was actively looking at the screen and found the numbers surprising. There is no system that would have caught it (or a worse variant of it) automatically, at 3 AM, or if the admin happened to be looking at a different tab.
+**Description.** Originally: every incident was caught by a human noticing, not a system signal. **Now resolved for the in-process case:** `_alert_slack()` fires to `#seekhostake-alerts` on market auto-suspend (instant), any unhandled exception (5-min dedup/endpoint), and a market that stays suspended (15-min nudge) — verified live 24 Sept by reading the channel back via the Slack API, not just trusting the webhook's 200. **What remains:** all three triggers run inside the one uvicorn process — if it dies outright (OOM, crash, Railway restart hang) rather than throwing a handled exception, nothing fires, because the alerting code dies with it. A settlement anomaly with no suspension event also has no dedicated check.
 
-**Impact if it materializes.** A `house_floor` excursion, a stuck-suspended market during a live betting window, or a settlement anomaly could go unnoticed for the entire remainder of an event.
+**Impact if it materializes.** The process-death gap: total silence during an outage, same as before this pass, just narrowed to that one failure mode. The settlement-anomaly gap: a bad settlement could go unnoticed post-race (lower urgency — race is one-shot, reconciliation happens right after per the runbook, not hours later).
 
-**Current mitigation.** None systemic — human vigilance only, which worked today but is not a plan.
+**Current mitigation.** Slack alerting live for the three in-process triggers above (see Update, 24 Sept fourth pass).
 
-**Recommended action.** A scheduled check (every 1-2 minutes during a live event) that posts to Slack (or equivalent, already standard tooling for this team) if `house_floor < 0` or any market is suspended. Small, cheap, high-value. See architecture §14.
+**Recommended action.** External uptime monitor (UptimeRobot or Railway's own alerting) polling `/healthz` — the process-death case can only be closed from outside the process itself. ~5 minutes to set up, doesn't require a code change. See `docs/release-checklist.md` for the full prioritized list this pass produced, including why the settlement-anomaly check is lower priority than it looks (race is one-shot, not a recurring exposure window).
 
-**Owner.** Engineering.
+**Owner.** Engineering (uptime monitor setup) / Abhay (Railway or UptimeRobot account access).
 
 ---
 

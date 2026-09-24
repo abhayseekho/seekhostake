@@ -16,6 +16,7 @@ admin unlocks with ADMIN_PASSWORD via POST /auth/admin.
 import os
 import re
 import asyncio
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException
@@ -32,6 +33,17 @@ DEV = os.environ.get("SWIMBET_DEV", "").lower() in ("1", "true", "yes")
 AUTH_MODE = os.environ.get("AUTH_MODE", "oauth").lower()  # oauth | name
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DIST = os.path.join(_HERE, "frontend", "dist")
+
+# Betting closes ahead of the race itself (Sunday 27 Sept), independent of race phase — a fixed
+# UTC+5:30 offset rather than a zoneinfo tz name, since python:3.11-slim has no guarantee of
+# tzdata being installed and India never observes DST, so the offset is always exactly this.
+_IST = timezone(timedelta(hours=5, minutes=30))
+BETTING_DEADLINE = datetime(2026, 9, 27, 13, 0, 0, tzinfo=_IST)
+BETTING_DEADLINE_LABEL = "1:00 PM, Sunday 27 Sept (IST)"
+
+
+def _betting_closed_by_deadline() -> bool:
+    return datetime.now(timezone.utc) >= BETTING_DEADLINE
 
 _DEV_SESSION_SECRET = "dev-insecure-secret"
 _MIN_SESSION_SECRET_LENGTH = 32
@@ -277,9 +289,13 @@ async def api_stream(request: Request):
 
 @app.get("/api/config")
 def api_config():
-    """Unauthenticated: the login screen needs to know which auth mode to render."""
+    """Unauthenticated: the login screen needs to know which auth mode to render, and shows the
+    betting deadline so it's visible before anyone even signs in."""
     return {"auth_mode": AUTH_MODE,
-            "test_login": bool(os.environ.get("TEST_LOGIN_PASSWORD"))}
+            "test_login": bool(os.environ.get("TEST_LOGIN_PASSWORD")),
+            "betting_deadline": BETTING_DEADLINE.isoformat(),
+            "betting_deadline_label": BETTING_DEADLINE_LABEL,
+            "betting_closed": _betting_closed_by_deadline()}
 
 
 @app.get("/api/state")
@@ -297,6 +313,7 @@ def api_state(request: Request, as_user: bool = False):
         pending_by_market.setdefault(p["market"], []).append(p)
     my_pendings = {p["market"]: p for p in all_pending if p["key"] == u["key"]}
     mine_all = {b["market"]: b for b in store.my_approved(u["key"])}
+    deadline_passed = _betting_closed_by_deadline()
 
     markets = []
     for m in rules.MARKETS:
@@ -322,7 +339,7 @@ def api_state(request: Request, as_user: bool = False):
         suspended = mid in r["suspended"]
         markets.append({
             "id": mid, "name": m["name"], "sub": m.get("sub"), "main": bool(m.get("main")),
-            "open": r["phase"] in m["open_phases"] and not suspended,
+            "open": r["phase"] in m["open_phases"] and not suspended and not deadline_passed,
             "suspended": suspended,
             "pool": sum(t for t, _ in shown_totals.values()),
             "outcomes": [{"id": oid, "label": book["outcomes"][oid]["label"],
@@ -341,8 +358,10 @@ def api_state(request: Request, as_user: bool = False):
         "me": {"key": u["key"], "name": u["name"], "is_owner": owner, "can_admin": can_admin},
         "race": {"phase": r["phase"], "laps": r["laps"],
                  "wins": rules.lap_wins(r["laps"]),
-                 "book_open": r["phase"] in rules.OPEN_PHASES},
+                 "book_open": r["phase"] in rules.OPEN_PHASES and not deadline_passed},
         "markets": markets,
+        "betting_deadline_label": BETTING_DEADLINE_LABEL,
+        "betting_closed": deadline_passed,
         "bets": sorted(({"key": b["key"], "display_name": b["display_name"],
                          "side": b["outcome"], "amount": b["amount"]}
                         for b in match_rows if owner or not b["key"].startswith("house")),
@@ -369,6 +388,8 @@ class BetIn(BaseModel):
 @app.post("/api/bets")
 def api_submit_bet(request: Request, body: BetIn):
     u = _require(request)
+    if _betting_closed_by_deadline():
+        raise HTTPException(400, "betting_closed")
     r = store.get_race()
     mine = store.current_approved(u["key"], body.market)
     ok, reason = rules.can_submit(body.market, r["phase"], body.outcome, body.amount,
@@ -457,22 +478,34 @@ def api_approve(request: Request, bet_id: int):
         _notify()
         raise HTTPException(409, "arbitrage_bet")
     # Circuit breaker: a thin market can be swung 5-10x by one realistically-sized bet. Compare
-    # this market's odds before vs after approving; a big enough swing auto-suspends it for
-    # review. The bet itself still goes through — cash is already in hand — only FURTHER bets
-    # on this market are blocked until an admin resumes it.
+    # this market's odds before vs after approving — a big swing is a PROXY for risk, not risk
+    # itself, so before acting on it we check the actual invariant the whole engine is built on:
+    # house_floor (worst-case organiser take across every possible race outcome, right now, with
+    # this bet included). If the house is provably safe regardless, there is nothing to protect —
+    # clear it instantly and stay live. Only a swing that ALSO leaves the house exposed suspends
+    # the market for a human. One synchronous check, no polling: this is as fast as it gets — a
+    # background loop would only add latency for a number we already have in hand.
     before = rules.market_book(p["market"], store.approved_bets(p["market"]))
     store.approve_bet(bet_id, u["key"])
     after = rules.market_book(p["market"], store.approved_bets(p["market"]))
     swing_ratio, swing_outcome = rules.odds_swing(before, after)
     suspended_now = False
+    swing_cleared = False
+    floor = None
     if swing_ratio > rules.VOLATILITY_SUSPEND_RATIO:
-        store.suspend_market(p["market"])
-        suspended_now = True
+        floor = rules.house_floor(store.approved_by_market(), r["laps"])
+        if floor >= 0:
+            swing_cleared = True  # house safe regardless of outcome — nothing to protect
+        else:
+            store.suspend_market(p["market"])
+            suspended_now = True
     _notify()
     out = {"ok": True}
     if suspended_now:
         out["suspended_market"] = p["market"]
-        out["swing"] = {"outcome": swing_outcome, "ratio": round(swing_ratio, 2)}
+        out["swing"] = {"outcome": swing_outcome, "ratio": round(swing_ratio, 2), "floor": floor}
+    elif swing_cleared:
+        out["swing_cleared"] = {"outcome": swing_outcome, "ratio": round(swing_ratio, 2), "floor": floor}
     return out
 
 
@@ -622,6 +655,27 @@ def api_suspend_market(request: Request, market_id: str):
     store.suspend_market(market_id)
     _notify()
     return {"ok": True}
+
+
+@app.post("/api/admin/markets/recheck")
+def api_recheck_markets(request: Request):
+    """Re-runs the real safety check (house_floor, not the odds-swing proxy) and, if the house is
+    provably safe regardless of outcome, clears EVERY currently suspended market — including ones
+    paused by hand — e.g. after liquidity was topped up, or for markets suspended before this
+    check existed. One-shot, synchronous, no polling: if you want a market to stay paused for a
+    reason unrelated to money (e.g. reviewing something), don't call this while it matters."""
+    u = _require_owner(request)
+    r = store.get_race()
+    floor = rules.house_floor(store.approved_by_market(), r["laps"])
+    cleared = []
+    if floor >= 0:
+        for mid in r["suspended"]:
+            store.resume_market(mid)
+            cleared.append(mid)
+        if cleared:
+            _notify()
+    return {"ok": True, "floor": floor, "cleared": cleared,
+            "still_suspended": [m for m in r["suspended"] if m not in cleared]}
 
 
 @app.post("/api/admin/race/start-lap")

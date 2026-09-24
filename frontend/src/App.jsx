@@ -35,10 +35,11 @@ const REASON_TEXT = {
   not_pending: "This request was already handled.",
   arbitrage_bet: "This combination would guarantee you a profit regardless of outcome. One of your bets must carry risk.",
   market_suspended: "This market is paused for review after an unusual odds swing. Check with the organiser.",
+  betting_closed: "Betting is closed for this event.",
 };
 
 // ── login ────────────────────────────────────────────────────────────────────────────────────────
-function Login({ authMode, testLogin, onNamed }) {
+function Login({ authMode, testLogin, deadlineLabel, onNamed }) {
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
   const [showRules, setShowRules] = useState(false);
@@ -70,8 +71,13 @@ function Login({ authMode, testLogin, onNamed }) {
           Seekho<span className="text-gold">Stake</span>
         </h1>
         <p className="text-dim mb-2">Khuseel vs Bansod · Best of 3 · 27 Sept</p>
+        {deadlineLabel && (
+          <p className="text-gold text-xs font-bold tracking-[.02em] mb-4">
+            Betting closes {deadlineLabel}
+          </p>
+        )}
         <button onClick={() => setShowRules(true)} className="text-dim text-sm underline mb-6">Rules</button>
-        {showRules && <Rules onClose={() => setShowRules(false)} />}
+        {showRules && <Rules deadlineLabel={deadlineLabel} onClose={() => setShowRules(false)} />}
         {authMode === "name" ? (
           <div className="space-y-3">
             <input
@@ -512,16 +518,37 @@ function Admin({ state, refresh }) {
     if (r._error) {
       setMsg(REASON_TEXT[r._error] || r._error);
       alert(`Approving ${p.display_name}'s ${inr(p.amount)} bet — not done.\n\n${REASON_TEXT[r._error] || r._error}`);
+    } else if (r.suspended_market) {
+      const mkt = markets.find((m) => m.id === r.suspended_market);
+      setMsg("");
+      alert(`Approved. But this bet swung "${mkt ? mkt.name : r.suspended_market}" ` +
+        `${r.swing.ratio}× on ${LABEL[r.swing.outcome] || r.swing.outcome}, and the house isn't ` +
+        `covered on every outcome (worst case ${inr(r.swing.floor)}) — SUSPENDED for review. ` +
+        `Resume it from the panel below once you're comfortable.`);
+    } else if (r.swing_cleared) {
+      // Odds moved a lot but house_floor stayed >= 0 across every possible outcome — provably
+      // safe, so it never paused. Quiet note only; nothing needs the admin's attention.
+      setMsg(`Note: this bet moved ${LABEL[r.swing_cleared.outcome] || r.swing_cleared.outcome} ` +
+        `${r.swing_cleared.ratio}× — checked, house is covered (worst case ${inr(r.swing_cleared.floor)}), stayed live.`);
     } else {
       setMsg("");
-      if (r.suspended_market) {
-        const mkt = markets.find((m) => m.id === r.suspended_market);
-        alert(`Approved. But this bet swung "${mkt ? mkt.name : r.suspended_market}" ` +
-          `${r.swing.ratio}× on ${LABEL[r.swing.outcome] || r.swing.outcome} — the market is now ` +
-          `SUSPENDED for review. Resume it from the Suspended markets panel once you're comfortable.`);
-      }
     }
     refresh(); loadPending();
+  };
+
+  const recheck = async () => {
+    const r = await post("/api/admin/markets/recheck");
+    if (r._error) { alert(r._error); return; }
+    if (r.cleared.length) {
+      alert(`House is covered (worst case ${inr(r.floor)}) — resumed: ` +
+        r.cleared.map((id) => (markets.find((m) => m.id === id) || {}).name || id).join(", "));
+    } else if (r.still_suspended.length) {
+      alert(`House is not covered on every outcome right now (worst case ${inr(r.floor)}) — ` +
+        `left suspended: ` + r.still_suspended.map((id) => (markets.find((m) => m.id === id) || {}).name || id).join(", "));
+    } else {
+      alert("Nothing is suspended.");
+    }
+    refresh();
   };
 
   return (
@@ -530,8 +557,12 @@ function Admin({ state, refresh }) {
 
       {suspendedMarkets.length > 0 && (
         <div className="bg-gold/10 border border-gold/40 rounded-xl p-3 space-y-2">
-          <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-gold">
-            Suspended markets — unusual odds swing</h3>
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-[11px] font-bold tracking-[.13em] uppercase text-gold">
+              Suspended markets — unusual odds swing</h3>
+            <button onClick={recheck}
+              className="text-[11px] font-bold text-gold underline shrink-0">Recheck now</button>
+          </div>
           {suspendedMarkets.map((m) => (
             <div key={m.id} className="flex items-center justify-between text-sm">
               <span>{m.name}</span>
@@ -721,7 +752,7 @@ function Admin({ state, refresh }) {
 }
 
 // ── rulebook ─────────────────────────────────────────────────────────────────────────────────────
-function Rules({ onClose }) {
+function Rules({ onClose, deadlineLabel }) {
   const S = ({ n, title, children }) => (
     <div className="mb-4">
       <h3 className="font-bold mb-1">{n}. {title}</h3>
@@ -760,6 +791,10 @@ function Rules({ onClose }) {
             locked once lap 1 starts — raises only. All betting
             <b className="text-ink"> closes when lap 2 starts</b>; unapproved requests are then
             rejected and cash returned.</p>
+          {deadlineLabel && (
+            <p>Regardless of race progress, all betting closes for good at
+              <b className="text-gold"> {deadlineLabel}</b>.</p>
+          )}
         </S>
         <S n={5} title="Payouts">
           <p>Pool betting: a losing stake is forfeited; a winning bet is paid from the pool at the
@@ -790,6 +825,7 @@ export default function App() {
   const [unauth, setUnauth] = useState(false);
   const [authMode, setAuthMode] = useState("oauth");
   const [testLogin, setTestLogin] = useState(false);
+  const [deadlineLabel, setDeadlineLabel] = useState("");
   const [picked, setPicked] = useState(null);
   const [settlement, setSettlement] = useState(null);
   const [showRules, setShowRules] = useState(false);
@@ -823,6 +859,7 @@ export default function App() {
     get("/api/config").then((c) => {
       if (c && c.auth_mode) setAuthMode(c.auth_mode);
       if (c) setTestLogin(!!c.test_login);
+      if (c && c.betting_deadline_label) setDeadlineLabel(c.betting_deadline_label);
     });
     refresh();
     // Push-based sync: the server pings this stream the instant any bet, approval, lap result,
@@ -835,7 +872,7 @@ export default function App() {
     return () => { es.close(); clearInterval(fallback); };
   }, [refresh]);
 
-  if (unauth) return <Login authMode={authMode} testLogin={testLogin} onNamed={refresh} />;
+  if (unauth) return <Login authMode={authMode} testLogin={testLogin} deadlineLabel={deadlineLabel} onNamed={refresh} />;
   if (!state) return <div className="min-h-screen flex items-center justify-center text-dim">Loading…</div>;
 
   const main = state.markets.find((m) => m.main);
@@ -867,7 +904,7 @@ export default function App() {
           <a href="/auth/logout" className="underline">Logout</a>
         </div>
       </header>
-      {showRules && <Rules onClose={() => setShowRules(false)} />}
+      {showRules && <Rules deadlineLabel={deadlineLabel} onClose={() => setShowRules(false)} />}
 
       <div className="lg:grid lg:grid-cols-[1fr,340px] lg:gap-5 lg:items-start">
         <div className="space-y-4">

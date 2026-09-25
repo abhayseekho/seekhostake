@@ -58,6 +58,14 @@ FIXED_HOUSE_CAP = 10_000       # max the house will risk losing on any one outco
 MATCH_BANSOD_PRIOR = 0.80      # organiser's read: Bansod wins the MATCH 80% of the time
 FIXED_PER_LAP_BANSOD = 0.715   # per-lap Bansod prob that yields ≈80% match (p²·(3−2p) ≈ 0.80),
                                # used to price the lap / score / distance / comeback markets coherently
+# Odds = a blend of the organiser's probability read and the crowd's money: FIXED_PRIOR_WEIGHT to the
+# read, the rest to the observed money split on that market. So the board mostly reflects the 80%
+# call but drifts toward whichever side the money actually lands on.
+FIXED_PRIOR_WEIGHT = 0.80      # 80% the read, 20% the money placed
+# Display/offer ceiling for fixed odds. Higher than the parimutuel MAX_PAYOUT_MULT so genuine
+# long-shots (e.g. Khuseel 2–0) price distinctly instead of all flattening at the cap — the house is
+# protected by FIXED_HOUSE_CAP regardless, not by clipping the quoted multiple.
+FIXED_MAX_ODDS = 15
 
 PHASES = ("prerace", "lap1", "break1", "lap2", "break2", "lap3", "finished", "settled")
 OPEN_PHASES = ("prerace", "break1")  # any betting at all
@@ -315,26 +323,42 @@ def fixed_prob(market_id, outcome):
     return outcome_priors(market_id, FIXED_PER_LAP_BANSOD)[outcome]
 
 
-def fixed_base_odds(market_id, outcome):
-    """The board price for an outcome before any exposure shortening: fair odds from probability
-    with the house margin, clamped to [1.05, MAX_PAYOUT_MULT]."""
-    p = fixed_prob(market_id, outcome)
+def fixed_blended_prob(market_id, outcome, money_by_outcome=None):
+    """The probability the price is built on: FIXED_PRIOR_WEIGHT on the organiser's read, the rest
+    on the crowd's money split for this market. money_by_outcome = {outcome: ₹ backed} (human money;
+    None or all-zero → pure read). This is what makes the board 'give weightage to what people put
+    money on' while still anchoring to the 80% call."""
+    p_read = fixed_prob(market_id, outcome)
+    if not money_by_outcome:
+        return p_read
+    total = sum(money_by_outcome.values())
+    if total <= 0:
+        return p_read
+    p_money = money_by_outcome.get(outcome, 0) / total
+    return FIXED_PRIOR_WEIGHT * p_read + (1 - FIXED_PRIOR_WEIGHT) * p_money
+
+
+def fixed_base_odds(market_id, outcome, money_by_outcome=None):
+    """The board price before any exposure shortening: fair odds from the blended probability with
+    the house margin, clamped to [1.05, FIXED_MAX_ODDS]."""
+    p = fixed_blended_prob(market_id, outcome, money_by_outcome)
     if p <= 0:
-        return MAX_PAYOUT_MULT
-    return round(max(1.05, min(MAX_PAYOUT_MULT, (1 - FIXED_ODDS_MARGIN) / p)), 3)
+        return FIXED_MAX_ODDS
+    return round(max(1.05, min(FIXED_MAX_ODDS, (1 - FIXED_ODDS_MARGIN) / p)), 3)
 
 
 def fixed_offer_odds(market_id, outcome, stake, fixed_pool_before, outcome_liability_before,
-                     cap=FIXED_HOUSE_CAP):
+                     cap=FIXED_HOUSE_CAP, money_by_outcome=None):
     """Odds to LOCK for a new fixed bet of `stake` on `outcome`, given the fixed book so far
     (fixed_pool_before = Σ fixed stakes in this market; outcome_liability_before = Σ stake×odds
-    already locked on this outcome). Starts from the board price, then shortens so that after this
-    bet the outcome's total liability can't exceed fixed_pool_after·(1−rake) + cap — which bounds
-    the house's worst-case loss on this outcome to `cap`. Monotonic: pool only grows and an
-    outcome's liability only grows when a bet lands on it, so the bound holds at settlement too."""
+    already locked on this outcome) and the crowd's money split (money_by_outcome). Starts from the
+    blended board price, then shortens so that after this bet the outcome's total liability can't
+    exceed fixed_pool_after·(1−rake) + cap — which bounds the house's worst-case loss on this outcome
+    to `cap`. Monotonic: pool only grows and an outcome's liability only grows when a bet lands on
+    it, so the bound holds at settlement too."""
     if stake <= 0:
         return None
-    base = fixed_base_odds(market_id, outcome)
+    base = fixed_base_odds(market_id, outcome, money_by_outcome)
     headroom = fixed_pool_before * (1 - HOUSE_RAKE) + cap - outcome_liability_before
     l_max = max(1.0, 1 + headroom / stake)
     return round(min(base, l_max), 3)

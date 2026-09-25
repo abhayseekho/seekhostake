@@ -114,6 +114,30 @@ def test_board_is_bansod_tilted():
     assert E.fixed_base_odds("match", "bansod") < E.fixed_base_odds("match", "khuseel")
 
 
+def test_demand_weighting_blends_read_with_money():
+    """80% the organiser's read, 20% the money. With money piled on Bansod, Bansod's blended prob
+    rises above the 80% read → its odds shorten; Khuseel's lengthen. No money → pure read."""
+    # pure read (no money) — anchored to the 80% call
+    assert E.fixed_base_odds("match", "bansod") == E.fixed_base_odds("match", "bansod", None)
+    read_bansod = E.fixed_base_odds("match", "bansod")
+    # money almost entirely on Bansod pulls the blend toward Bansod → shorter Bansod odds
+    heavy_bansod = {"bansod": 90000, "khuseel": 10000}
+    assert E.fixed_base_odds("match", "bansod", heavy_bansod) < read_bansod
+    assert E.fixed_base_odds("match", "khuseel", heavy_bansod) > E.fixed_base_odds("match", "khuseel")
+    # the blend is exactly FIXED_PRIOR_WEIGHT·read + (1-w)·moneyshare
+    p = E.fixed_blended_prob("match", "bansod", heavy_bansod)
+    assert abs(p - (E.FIXED_PRIOR_WEIGHT * 0.80 + (1 - E.FIXED_PRIOR_WEIGHT) * 0.90)) < 1e-9
+
+
+def test_long_shots_differentiate_under_the_higher_fixed_cap():
+    """The two Khuseel scores used to both flatten at the 7x parimutuel cap; under FIXED_MAX_ODDS
+    they price distinctly (2–0 rarer than 2–1, so it pays more)."""
+    k20 = E.fixed_base_odds("score", "k20")
+    k21 = E.fixed_base_odds("score", "k21")
+    assert k20 > k21 > 1.0
+    assert k20 <= E.FIXED_MAX_ODDS
+
+
 def test_offer_odds_shorten_as_a_side_fills():
     """The core safety behaviour: the more liability already locked on an outcome, the shorter the
     odds offered to the next bet on it — never longer."""

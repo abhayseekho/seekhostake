@@ -533,6 +533,11 @@ def api_state(request: Request, as_user: bool = False):
         fixed_liab = {}
         for b in fixed_here:
             fixed_liab[b["outcome"]] = fixed_liab.get(b["outcome"], 0) + int(b["amount"]) * float(b["locked_odds"])
+        # Crowd's money split (human bets, pool + fixed) → the demand weight blended into the price.
+        money_by_outcome = {}
+        for b in rows:
+            if not b["key"].startswith("house"):
+                money_by_outcome[b["outcome"]] = money_by_outcome.get(b["outcome"], 0) + int(b["amount"])
         # Same per-bettor visibility already shipped for the match market (house rows are the
         # organiser's own liquidity, not a bettor's cash, so they're owner-only) — generalized here
         # to every market so admin and bettors alike can see who's actually in each side book, not
@@ -550,7 +555,8 @@ def api_state(request: Request, as_user: bool = False):
             "outcomes": [{"id": oid, "label": book["outcomes"][oid]["label"],
                           "est_mult": book["outcomes"][oid]["est_mult"],
                           "fixed_odds": (rules.fixed_offer_odds(
-                              mid, oid, rules.MIN_BET_AMOUNT, fixed_pool, fixed_liab.get(oid, 0))
+                              mid, oid, rules.MIN_BET_AMOUNT, fixed_pool, fixed_liab.get(oid, 0),
+                              money_by_outcome=money_by_outcome)
                               if FIXED_ODDS_ENABLED and rules.outcome_alive(mid, oid, r["laps"]) else None),
                           "total": shown_totals[oid][0], "bettors": shown_totals[oid][1],
                           "alive": rules.outcome_alive(mid, oid, r["laps"])}

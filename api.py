@@ -520,6 +520,15 @@ def api_state(request: Request, as_user: bool = False):
         my = mine_all.get(mid)
         pend = my_pendings.get(mid)
         suspended = mid in r["suspended"]
+        # Same per-bettor visibility already shipped for the match market (house rows are the
+        # organiser's own liquidity, not a bettor's cash, so they're owner-only) — generalized here
+        # to every market so admin and bettors alike can see who's actually in each side book, not
+        # just the match book. Approved rows only (mirrors match: a pending raise doesn't replace
+        # the row here until it's actually approved).
+        market_bets = sorted(
+            ({"key": b["key"], "display_name": b["display_name"], "side": b["outcome"], "amount": b["amount"]}
+             for b in by_market.get(mid, []) if owner or not b["key"].startswith("house")),
+            key=lambda b: -b["amount"])
         markets.append({
             "id": mid, "name": m["name"], "sub": m.get("sub"), "main": bool(m.get("main")),
             "open": r["phase"] in m["open_phases"] and not suspended and not deadline_passed,
@@ -533,6 +542,7 @@ def api_state(request: Request, as_user: bool = False):
             "my_bet": my and {"outcome": my["outcome"], "amount": my["amount"]},
             "my_pending": pend and {"id": pend["id"], "outcome": pend["outcome"],
                                     "amount": pend["amount"]},
+            "bets": market_bets,
         })
 
     match_rows = by_market.get("match", [])

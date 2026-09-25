@@ -72,7 +72,7 @@ FIXED_PRIOR_WEIGHT = 0.80      # 80% the read, 20% the money placed
 # long-shots (e.g. Khuseel 2–0) price distinctly instead of all flattening at the cap. Nothing
 # protects the house behind this now — this ceiling IS the per-bet risk limit, so a winning fixed
 # bet can cost at most 15× its stake.
-FIXED_MAX_ODDS = 15
+FIXED_MAX_ODDS = 7
 
 PHASES = ("prerace", "lap1", "break1", "lap2", "break2", "lap3", "finished", "settled")
 OPEN_PHASES = ("prerace", "break1")  # any betting at all
@@ -345,13 +345,23 @@ def fixed_blended_prob(market_id, outcome, money_by_outcome=None):
     return FIXED_PRIOR_WEIGHT * p_read + (1 - FIXED_PRIOR_WEIGHT) * p_money
 
 
-def fixed_base_odds(market_id, outcome, money_by_outcome=None):
-    """The board price for an outcome: fair odds from the blended probability with the house
-    margin, clamped to [1.05, FIXED_MAX_ODDS]."""
+def _fixed_raw_odds(market_id, outcome, money_by_outcome=None):
+    """Uncapped fair odds for one outcome from the blended (80% read / 20% money) probability."""
     p = fixed_blended_prob(market_id, outcome, money_by_outcome)
-    if p <= 0:
-        return FIXED_MAX_ODDS
-    return round(max(1.05, min(FIXED_MAX_ODDS, (1 - FIXED_ODDS_MARGIN) / p)), 3)
+    return (1 - FIXED_ODDS_MARGIN) / p if p > 0 else float("inf")
+
+
+def fixed_base_odds(market_id, outcome, money_by_outcome=None):
+    """The board price for an outcome — the 80/20 blend, then CAPPED at FIXED_MAX_ODDS by
+    whole-market proportional normalisation: if any outcome in this market prices above the cap,
+    EVERY outcome in the market is scaled by cap/market_max, so the longest shot lands exactly on
+    the cap and all the others keep their ratios (normalised backwards from the ceiling) rather than
+    a few flattening at the cap. Markets already under the cap are untouched. Floor 1.05."""
+    m = MARKET_BY_ID[market_id]
+    raw = {oid: _fixed_raw_odds(market_id, oid, money_by_outcome) for oid, _ in m["outcomes"]}
+    mx = max(raw.values())
+    scale = FIXED_MAX_ODDS / mx if mx > FIXED_MAX_ODDS else 1.0
+    return round(max(1.05, raw[outcome] * scale), 3)
 
 
 def fixed_offer_odds(market_id, outcome, stake, fixed_pool_before=0, outcome_liability_before=0,

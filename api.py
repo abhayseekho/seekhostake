@@ -644,6 +644,96 @@ def api_pending(request: Request):
     return {"pending": out}
 
 
+@app.get("/api/admin/bets")
+def api_all_bets(request: Request):
+    """Full bet ledger — every request ever made, any status, across all markets — so the admin
+    can find and correct one that isn't pending or approved (already rejected, cancelled, or
+    superseded), not just act on what's currently in the queue. Each row carries the CURRENT
+    estimated odds for its own (market, outcome), computed on the same approved+pending basis
+    as /api/state's owner view, so "what's allocated to who" is one glance, not a cross-reference
+    against the odds board."""
+    _require_owner(request)
+    by_market = store.approved_by_market()
+    pending_by_market = {}
+    for p in store.pending_bets():
+        pending_by_market.setdefault(p["market"], []).append(p)
+    books = {}
+    for m in rules.MARKETS:
+        mid = m["id"]
+        rows = by_market.get(mid, []) + pending_by_market.get(mid, [])
+        books[mid] = rules.market_book(mid, rows)
+
+    out = []
+    for b in store.all_bets():
+        m = rules.MARKET_BY_ID.get(b["market"])
+        outcome_book = books.get(b["market"], {}).get("outcomes", {}).get(b["outcome"])
+        est_mult = outcome_book["est_mult"] if outcome_book else None
+        out.append({
+            "id": b["id"], "key": b["key"], "display_name": b["display_name"],
+            "market": b["market"], "market_name": m["name"] if m else b["market"],
+            "outcome": b["outcome"],
+            "outcome_label": dict(m["outcomes"]).get(b["outcome"], b["outcome"]) if m else b["outcome"],
+            "amount": b["amount"], "status": b["status"], "source": b["source"],
+            "est_mult": est_mult,
+            "est_payout": round(b["amount"] * est_mult) if est_mult else None,
+            "created_at": b["created_at"].isoformat(),
+            "decided_at": b["decided_at"].isoformat() if b["decided_at"] else None,
+        })
+    return {"bets": out}
+
+
+class StatusChange(BaseModel):
+    status: str
+
+
+@app.post("/api/admin/bets/{bet_id}/status")
+def api_set_status(request: Request, bet_id: int, body: StatusChange):
+    """Admin override: force any bet directly to a new status, regardless of its current one —
+    for correcting mistakes (wrong tap, cash paid after a reject, an approve that needs undoing).
+    Distinct from /approve and /reject (the normal cash-collection flow, which stays the primary
+    path and keeps its own arbitrage/circuit-breaker checks on the INCOMING bet); this is the
+    blunt escape hatch for a bet that's already been decided, so like admin_manual_bet it skips
+    those bettor-facing checks — but it still can't break the one-approved/one-pending-per-
+    person-per-market invariants (store.set_status supersedes in the same transaction), and a
+    move that newly approves a bet still gets the house re-checked afterward, same protection
+    the real approve flow gives the house."""
+    u = _require_owner(request)
+    if body.status not in store.ADMIN_SETTABLE_STATUSES:
+        raise HTTPException(400, "bad_status")
+    if store.load_settlement() is not None:
+        raise HTTPException(400, "already_settled")
+    with _approve_lock:
+        try:
+            old = store.set_status(bet_id, body.status, u["key"])
+        except IntegrityError:
+            # Belt-and-suspenders, same as api_approve: the one_approved_per_person_market index
+            # is the last line of defense if this handler's own supersede-then-set is ever raced.
+            log.error("set_status hit one_approved_per_person_market constraint: bet_id=%s status=%s",
+                      bet_id, body.status)
+            raise HTTPException(409, "already_approved")
+        if old is None:
+            raise HTTPException(404, "not_found")
+        out = {"ok": True, "old_status": old["status"], "new_status": body.status}
+        if body.status == "approved" and old["status"] != "approved":
+            floor = rules.house_floor(store.approved_by_market(), store.get_race()["laps"])
+            if floor < 0:
+                store.suspend_market(old["market"])
+                out["suspended_market"] = old["market"]
+                out["floor"] = floor
+                log.warning("market AUTO-SUSPENDED on status override: market=%s bet_id=%s floor=%d",
+                           old["market"], bet_id, floor)
+                _alert_slack(
+                    f":rotating_light: *Market auto-suspended* — `{old['market']}`\n"
+                    f"Status override on bet #{bet_id} left the house uncovered on some outcome "
+                    f"(worst case {floor:+d}). Betting paused on this market only — review and "
+                    f"resume from the admin panel."
+                )
+    if old["status"] != body.status:
+        log.info("bet status overridden: bet_id=%s %s->%s by=%s", bet_id, old["status"], body.status, u["key"])
+        _notify()
+    return out
+
+
 @app.post("/api/admin/bets/{bet_id}/approve")
 def api_approve(request: Request, bet_id: int):
     u = _require_owner(request)

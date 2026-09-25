@@ -4,6 +4,7 @@ import { SIDES, LABEL, SIDE_TEXT, REASON_TEXT } from "../lib/constants.js";
 import { TONE_TEXT, tone } from "../lib/theme.js";
 import { inr } from "../lib/format.js";
 import ProjectedPayouts from "./ProjectedPayouts.jsx";
+import BetLedger from "./BetLedger.jsx";
 
 // The cashier's speed tool during the live window (audit §8) — the information architecture here
 // was already right (pending-cash-first, race console, rare tools tucked behind a disclosure) and
@@ -227,6 +228,15 @@ export default function Admin({ state, refresh }) {
           </div>
         </details>
       )}
+
+      <details className="border-t border-edge/60 pt-3">
+        <summary className="cursor-pointer text-2xs font-bold tracking-label uppercase text-faint
+          hover:text-dim select-none transition-colors duration-quick">
+          All bets — find and correct any bet's status</summary>
+        <div className="mt-3">
+          <BetLedger state={state} refresh={refresh} />
+        </div>
+      </details>
 
       {/* ── Setup & rare-use tools — tucked away, one tap to reach ───────── */}
       <details className="border-t border-edge/60 pt-3">

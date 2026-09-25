@@ -880,3 +880,195 @@ def test_projected_payouts_blocked_after_settlement():
     admin.post("/api/admin/settle")
     r = admin.get("/api/admin/projected-payouts")
     assert r.status_code == 400 and r.json()["detail"] == "already_settled"
+
+
+# ── bet ledger + admin status override ──────────────────────────────────────────────────────────
+
+def test_bets_ledger_requires_owner():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice = user_client("Alice")
+    r = alice.get("/api/admin/bets")
+    assert r.status_code == 403
+
+
+def test_bets_ledger_lists_every_status_not_just_live():
+    """pending_bets()/approved_bets() only ever show the live queue — this is the one endpoint
+    where a rejected or cancelled bet is still findable, which is the whole point: you can't
+    correct a mistake you can't see."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    bob = user_client("Bob")
+    r = bob.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 600})
+    rejected_id = r.json()["id"]
+    admin.post(f"/api/admin/bets/{rejected_id}/reject")
+    bob.post("/api/bets", json={"market": "match", "outcome": "bansod", "amount": 700})
+    assert bob.post("/api/bets/cancel", json={"market": "match"}).json()["cancelled"] == 1
+
+    rows = {b["id"]: b for b in admin.get("/api/admin/bets").json()["bets"]}
+    assert rows[rejected_id]["status"] == "rejected"
+    statuses_present = {b["status"] for b in rows.values()}
+    assert {"approved", "rejected", "cancelled"} <= statuses_present
+
+
+def test_bets_ledger_odds_match_direct_engine_call():
+    """The 'odds allocated to who' column must be the SAME number the odds board and the real
+    settlement math would use — not a separately-computed approximation."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    carol = user_client("Carol")
+    carol.post("/api/bets", json={"market": "match", "outcome": "bansod", "amount": 800})  # pending
+
+    pending_by_market = {}
+    for p in store.pending_bets():
+        pending_by_market.setdefault(p["market"], []).append(p)
+    expected = E.market_book("match", store.approved_by_market().get("match", []) +
+                             pending_by_market.get("match", []))
+
+    for b in admin.get("/api/admin/bets").json()["bets"]:
+        if b["market"] != "match":
+            continue
+        mult = expected["outcomes"][b["outcome"]]["est_mult"]
+        assert b["est_mult"] == mult
+        assert b["est_payout"] == (round(b["amount"] * mult) if mult else None)
+
+
+def test_status_override_requires_owner():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice = user_client("Alice")
+    bet_id = store.current_approved("name:yashbanwani", "match")["id"]
+    r = alice.post(f"/api/admin/bets/{bet_id}/status", json={"status": "rejected"})
+    assert r.status_code == 403
+    assert store.bet_by_id(bet_id)["status"] == "approved"  # untouched
+
+
+def test_status_override_force_approve_a_rejected_bet():
+    """The core case this exists for: a bet that was wrongly rejected (or a portal request that
+    auto-rejected when a lap started before the admin got to it) but the cash genuinely was
+    collected — force it straight to approved without replaying it through /approve."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    dave = user_client("Dave")
+    r = dave.post("/api/bets", json={"market": "match", "outcome": "bansod", "amount": 900})
+    bet_id = r.json()["id"]
+    admin.post(f"/api/admin/bets/{bet_id}/reject")
+    assert store.bet_by_id(bet_id)["status"] == "rejected"
+    before = match_pool(admin)
+
+    r = admin.post(f"/api/admin/bets/{bet_id}/status", json={"status": "approved"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "old_status": "rejected", "new_status": "approved"}
+
+    row = store.bet_by_id(bet_id)
+    assert row["status"] == "approved"
+    assert row["decided_by"] == "name:admin"
+    assert row["note"].startswith("[override: rejected→approved]")
+    assert match_pool(admin) - before == 900
+
+
+def test_status_override_force_reject_an_approved_bet_shrinks_pool():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    before = match_pool(admin)
+    yash_bet_id = store.current_approved("name:yashbanwani", "match")["id"]
+
+    r = admin.post(f"/api/admin/bets/{yash_bet_id}/status", json={"status": "rejected"})
+    assert r.status_code == 200
+    assert before - match_pool(admin) == 5000
+    assert store.current_approved("name:yashbanwani", "match") is None
+
+
+def test_status_override_to_approved_supersedes_other_approved_same_market():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    old = store.current_approved("name:yashbanwani", "match")
+    assert old["amount"] == 5000 and old["outcome"] == "khuseel"
+
+    yash = user_client("Yash Banwani")  # same name_slug as the seeded key -> same identity
+    r = yash.post("/api/bets", json={"market": "match", "outcome": "bansod", "amount": 1200})
+    new_id = r.json()["id"]
+
+    r = admin.post(f"/api/admin/bets/{new_id}/status", json={"status": "approved"})
+    assert r.status_code == 200
+
+    assert store.bet_by_id(old["id"])["status"] == "superseded"
+    cur = store.current_approved("name:yashbanwani", "match")
+    assert cur["id"] == new_id and cur["amount"] == 1200 and cur["outcome"] == "bansod"
+
+
+def test_status_override_to_pending_cancels_other_pending_same_market():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    bob = user_client("Bob")
+    bet1_id = bob.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 600}).json()["id"]
+    admin.post(f"/api/admin/bets/{bet1_id}/reject")
+    bet2_id = bob.post("/api/bets", json={"market": "match", "outcome": "bansod", "amount": 700}).json()["id"]
+    assert store.bet_by_id(bet2_id)["status"] == "pending"
+
+    r = admin.post(f"/api/admin/bets/{bet1_id}/status", json={"status": "pending"})
+    assert r.status_code == 200
+
+    assert store.bet_by_id(bet1_id)["status"] == "pending"
+    assert store.bet_by_id(bet2_id)["status"] == "cancelled"
+    pending_ids = {p["id"] for p in admin.get("/api/admin/pending").json()["pending"]}
+    assert pending_ids == {bet1_id}
+
+
+def test_status_override_unknown_bet_404():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    r = admin.post("/api/admin/bets/999999/status", json={"status": "approved"})
+    assert r.status_code == 404 and r.json()["detail"] == "not_found"
+
+
+def test_status_override_bad_status_rejected():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    bet_id = store.current_approved("name:yashbanwani", "match")["id"]
+    for bad in ("superseded", "settled", "not_a_status", ""):
+        r = admin.post(f"/api/admin/bets/{bet_id}/status", json={"status": bad})
+        assert r.status_code == 400 and r.json()["detail"] == "bad_status"
+    assert store.bet_by_id(bet_id)["status"] == "approved"  # every rejected attempt was a no-op
+
+
+def test_status_override_noop_same_status_is_safe():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    bet_id = store.current_approved("name:yashbanwani", "match")["id"]
+    r = admin.post(f"/api/admin/bets/{bet_id}/status", json={"status": "approved"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "old_status": "approved", "new_status": "approved"}
+    assert store.bet_by_id(bet_id)["status"] == "approved"
+
+
+def test_status_override_blocked_after_settlement():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    bet_id = store.current_approved("name:yashbanwani", "match")["id"]
+    run_race(admin, [("bansod", 22.4), ("bansod", 23.1)])
+    admin.post("/api/admin/settle")
+    r = admin.post(f"/api/admin/bets/{bet_id}/status", json={"status": "rejected"})
+    assert r.status_code == 400 and r.json()["detail"] == "already_settled"
+    assert store.bet_by_id(bet_id)["status"] == "approved"  # frozen, untouched
+
+
+def test_status_override_house_floor_recheck_suspends_market(monkeypatch):
+    """Forcing a big rejected bet to 'approved' can expose the house exactly like a real approval
+    can — same protection applies: re-check house_floor afterward, and if it's negative, suspend
+    that market for review rather than silently leaving the house uncovered. The exact numeric
+    threshold is engine.py's concern (already covered elsewhere); this only proves the endpoint
+    reacts correctly when house_floor reports a losing position."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    bob = user_client("Bob")
+    bet_id = bob.post("/api/bets", json={"market": "match", "outcome": "khuseel", "amount": 900}).json()["id"]
+    admin.post(f"/api/admin/bets/{bet_id}/reject")
+
+    monkeypatch.setattr(api.rules, "house_floor", lambda *a, **k: -777)
+    r = admin.post(f"/api/admin/bets/{bet_id}/status", json={"status": "approved"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["suspended_market"] == "match"
+    assert body["floor"] == -777
+    assert "match" in store.get_race()["suspended"]

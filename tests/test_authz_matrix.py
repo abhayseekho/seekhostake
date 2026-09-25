@@ -80,8 +80,10 @@ AUTHED_ROUTES = [
 OWNER_ROUTES = [
     ("GET",  "/api/admin/pending",              None),
     ("GET",  "/api/admin/projected-payouts",    None),
+    ("GET",  "/api/admin/bets",                 None),
     ("POST", "/api/admin/bets/999999/approve",  None),
     ("POST", "/api/admin/bets/999999/reject",   None),
+    ("POST", "/api/admin/bets/999999/status",   {"status": "pending"}),
     ("POST", "/api/admin/bets/manual",
      {"name": "Matrix Walk-in", "outcome": "khuseel", "amount": 100}),
     ("POST", "/api/admin/house-seed",           {"outcome": "khuseel", "amount": 0}),

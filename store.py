@@ -157,6 +157,54 @@ def bet_by_id(bet_id):
     return dict(row) if row else None
 
 
+def all_bets():
+    """Every bet ever recorded, any status, newest first — the full admin ledger. Unlike
+    pending_bets()/approved_bets(), this is the only place rejected/cancelled/superseded rows
+    are ever surfaced again, which is what makes correcting one of them possible at all."""
+    with engine.begin() as cx:
+        rows = cx.execute(select(bets).order_by(bets.c.id.desc())).mappings().all()
+    return [dict(r) for r in rows]
+
+
+ADMIN_SETTABLE_STATUSES = ("pending", "approved", "rejected", "cancelled")
+
+
+def set_status(bet_id, new_status, admin_email):
+    """Admin override: force a bet directly to any status, bypassing the normal approve/reject
+    flow — for correcting mistakes (wrong tap, cash paid after a reject, an approve that needs
+    undoing) on a bet in ANY current status, not just pending. Returns the PRE-change row (or
+    None if bet_id doesn't exist), so the caller knows what it moved FROM.
+
+    Moving TO 'approved' still supersedes the person's other live approved bet in the same
+    market in the same transaction — exactly like approve_bet — so the one-approved-per-person-
+    per-market DB invariant (the partial unique index in init()) holds no matter which status
+    this bet is coming from. Moving TO 'pending' likewise cancels any other pending bet the
+    person has in that market, mirroring submit_bet's own invariant. Without both of these this
+    would just be an UPDATE statement; with them it's safe to point at any row in any state."""
+    with engine.begin() as cx:
+        row = cx.execute(select(bets).where(bets.c.id == bet_id)).mappings().first()
+        if row is None:
+            return None
+        if row["status"] == new_status:
+            return dict(row)  # no-op — nothing to move, caller treats old==new as unchanged
+        if new_status == "approved":
+            cx.execute(update(bets)
+                       .where(bets.c.key == row["key"], bets.c.market == row["market"],
+                              bets.c.status == "approved", bets.c.id != bet_id)
+                       .values(status="superseded", decided_at=_now(), decided_by=admin_email))
+        elif new_status == "pending":
+            cx.execute(update(bets)
+                       .where(bets.c.key == row["key"], bets.c.market == row["market"],
+                              bets.c.status == "pending", bets.c.id != bet_id)
+                       .values(status="cancelled", note="replaced by newer request",
+                               decided_at=_now(), decided_by=admin_email))
+        note = f"[override: {row['status']}→{new_status}] " + (row["note"] or "")
+        cx.execute(update(bets).where(bets.c.id == bet_id)
+                   .values(status=new_status, note=note.strip(), decided_at=_now(),
+                           decided_by=admin_email))
+        return dict(row)
+
+
 def current_approved(key, market="match"):
     with engine.begin() as cx:
         row = cx.execute(select(bets).where(bets.c.key == key, bets.c.status == "approved",

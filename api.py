@@ -953,6 +953,34 @@ def api_settle(request: Request):
     return result
 
 
+@app.get("/api/admin/projected-payouts")
+def api_projected_payouts(request: Request):
+    """Read-only preview: 'how much do I owe everyone' under every race outcome that's still
+    possible from here — before the race, or mid-race with some laps already decided. Reuses
+    rules.settle_all() and rules.race_scripts() exactly as real settlement does (see api_settle
+    above), so a projection can never drift from what /api/admin/settle would actually produce
+    for that same outcome. Never writes anything — no settlement is created, nothing is mutated;
+    it's the same math the house_floor/arbitrage guards already run internally, just surfaced."""
+    _require_owner(request)
+    if store.load_settlement() is not None:
+        raise HTTPException(400, "already_settled")
+    r = store.get_race()
+    by_market = store.approved_by_market()
+    scripts = []
+    for laps in rules.race_scripts(r["laps"]):
+        result = rules.settle_all(by_market, laps)
+        scripts.append({
+            "laps": laps,
+            "winner": result["winner"],
+            "wins": rules.lap_wins(laps),
+            "aggregate": result["aggregate"],
+            "swimmer_take": result["swimmer_take"],
+            "house_take": result["house_take"],
+            "total_pool": result["total_pool"],
+        })
+    return {"scripts": scripts}
+
+
 @app.post("/api/admin/seed")
 def api_seed(request: Request):
     _require_owner(request)

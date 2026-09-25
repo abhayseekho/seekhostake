@@ -79,6 +79,7 @@ AUTHED_ROUTES = [
 
 OWNER_ROUTES = [
     ("GET",  "/api/admin/pending",              None),
+    ("GET",  "/api/admin/projected-payouts",    None),
     ("POST", "/api/admin/bets/999999/approve",  None),
     ("POST", "/api/admin/bets/999999/reject",   None),
     ("POST", "/api/admin/bets/manual",

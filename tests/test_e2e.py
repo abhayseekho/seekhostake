@@ -806,3 +806,77 @@ def test_approve_reports_not_pending_if_bet_resolved_between_checks(monkeypatch)
     r = admin.post(f"/api/admin/bets/{bet_id}/approve")
     assert r.status_code == 404 and r.json()["detail"] == "not_pending"
     assert store.bet_by_id(bet_id)["status"] == "pending"  # untouched, not falsely approved
+
+
+# ── projected payouts (pre-settlement preview) ───────────────────────────────────────────────────
+
+def test_projected_payouts_requires_owner():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice = user_client("Alice")
+    r = alice.get("/api/admin/projected-payouts")
+    assert r.status_code == 403
+
+
+def test_projected_payouts_prerace_shows_all_six_scripts():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    r = admin.get("/api/admin/projected-payouts")
+    assert r.status_code == 200
+    scripts = r.json()["scripts"]
+    assert len(scripts) == 6  # BB, BKB, BKK, KK, KBK, KBB — see engine.race_scripts
+    for s in scripts:
+        assert s["winner"] in ("khuseel", "bansod")
+        assert s["wins"][s["winner"]] == 2
+        assert isinstance(s["aggregate"], list) and len(s["aggregate"]) > 0
+
+
+def test_projected_payouts_narrows_as_laps_happen():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    admin.post("/api/admin/race/start-lap")
+    admin.post("/api/admin/race/lap-result", json={"winner": "bansod", "time_s": 22.4})  # break1
+    r = admin.get("/api/admin/projected-payouts")
+    scripts = r.json()["scripts"]
+    assert len(scripts) == 3  # only completions consistent with bansod already winning lap 1
+    assert all(s["laps"][0]["winner"] == "bansod" for s in scripts)
+
+
+def test_projected_payouts_matches_direct_engine_call():
+    """Cross-check against an independent engine.settle_all() call for the same laps — the
+    endpoint must never compute its own, potentially-drifting version of this math."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    admin.post("/api/admin/house-seed", json={"outcome": "bansod", "amount": 3000})
+    r = admin.get("/api/admin/projected-payouts")
+    scripts = r.json()["scripts"]
+    by_market = store.approved_by_market()
+    for s in scripts:
+        expected = E.settle_all(by_market, s["laps"])
+        assert s["house_take"] == expected["house_take"]
+        assert s["swimmer_take"] == expected["swimmer_take"]
+        assert s["total_pool"] == expected["total_pool"]
+        assert s["aggregate"] == expected["aggregate"]
+
+
+def test_projected_payouts_mutates_nothing():
+    """The whole point is a safe preview — race phase, the bets table, and the (absence of a)
+    settlement record must all be exactly as they were before this was called."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    before_race = store.get_race()
+    before_bets = store.approved_by_market()
+    admin.get("/api/admin/projected-payouts")
+    admin.get("/api/admin/projected-payouts")  # twice, in case of any accidental write-on-read
+    assert store.get_race() == before_race
+    assert store.approved_by_market() == before_bets
+    assert store.load_settlement() is None
+
+
+def test_projected_payouts_blocked_after_settlement():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    run_race(admin, [("bansod", 22.4), ("bansod", 23.1)])
+    admin.post("/api/admin/settle")
+    r = admin.get("/api/admin/projected-payouts")
+    assert r.status_code == 400 and r.json()["detail"] == "already_settled"

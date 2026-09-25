@@ -276,12 +276,33 @@ def test_concurrent_settle_race_is_still_caught_by_save_settlement():
     assert store.save_settlement(result_b) is False  # second writer loses the race, cleanly
 
 
-def test_reset_book_only_pre_race():
+def test_reset_book_works_mid_race_and_rolls_phase_back():
+    """The full-reset button: usable after laps have run (rehearsals need to roll all the way
+    back), not just pre-race. Must reset phase/laps, not only wipe bets."""
     admin = admin_client()
     admin.post("/api/admin/seed")
     admin.post("/api/admin/race/start-lap")
+    admin.post("/api/admin/race/lap-result", json={"winner": "bansod", "time_s": 22.4})  # break1
+    bob = user_client("Bob")
+    bob.post("/api/bets", json={"market": "lap2", "outcome": "khuseel", "amount": 500})
+
     r = admin.post("/api/admin/reset-book")
-    assert r.status_code == 400 and r.json()["detail"] == "race_started"
+    assert r.status_code == 200
+    assert r.json()["seeded"] == len(SEED_BETS)
+
+    race = store.get_race()
+    assert race["phase"] == "prerace" and race["laps"] == [] and race["suspended"] == []
+    # only the reseeded book remains — Bob's lap2 bet is gone, not just superseded
+    assert "name:bob" not in {b["key"] for b in store.all_bets()}
+
+
+def test_reset_book_blocked_after_settlement():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    run_race(admin, [("bansod", 22.4), ("bansod", 23.1)])
+    admin.post("/api/admin/settle")
+    r = admin.post("/api/admin/reset-book")
+    assert r.status_code == 400 and r.json()["detail"] == "already_settled"
 
 
 def test_cancel_pending_snaps_odds_back():

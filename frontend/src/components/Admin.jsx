@@ -208,10 +208,17 @@ export default function Admin({ state, refresh }) {
               className="bg-raise border border-edge rounded-xl px-4 py-2.5 text-dim
                 hover:text-ink transition-colors duration-quick">Load seed book</button>
           )}
-          {matchPool > 0 && race.phase === "prerace" && (
-            <button onClick={() => { if (confirm("Wipe ALL bets in ALL markets and reload the seed book? Portal bets placed since seeding will be lost.")) act(() => post("/api/admin/reset-book")); }}
+          {matchPool > 0 && race.phase !== "settled" && (
+            <button onClick={() => { if (confirm(
+              (race.phase === "prerace"
+                ? "Wipe ALL bets in ALL markets and reload the seed book? "
+                : `Wipe ALL bets in ALL markets, DISCARD lap progress (currently ${race.phase}), ` +
+                  `and roll the race back to pre-race with the seed book reloaded? `) +
+              "This cannot be undone.")) act(() => post("/api/admin/reset-book")); }}
               className="bg-raise border border-edge rounded-xl px-4 py-2.5 text-dim
-                hover:text-ink transition-colors duration-quick">Reset to seed book</button>
+                hover:text-ink transition-colors duration-quick">
+              {race.phase === "prerace" ? "Reset to seed book" : "Full reset — back to pre-race"}
+            </button>
           )}
         </div>
         {race.phase === "break1" && (

@@ -327,11 +327,15 @@ def seed_side_markets(rows, admin_email):
 
 
 def reset_book(rows, admin_email):
-    """Pre-race only (enforced at the API): wipe ALL bets and reload the seed. Also clears any
-    circuit-breaker suspensions — a full reset restarts betting state entirely."""
+    """Wipe ALL bets, roll the race itself back to pre-race (any lap results are discarded), clear
+    circuit-breaker suspensions, and reload the seed — a full reset restarts betting state
+    entirely, not just the book. Usable at any point before settlement: rehearsals routinely need
+    to roll all the way back after running laps, not just correct a seed before anything's
+    happened."""
     with engine.begin() as cx:
         cx.execute(bets.delete())
-        cx.execute(update(race).where(race.c.id == 1).values(suspended="[]"))
+        cx.execute(update(race).where(race.c.id == 1)
+                   .values(phase="prerace", laps="[]", suspended="[]"))
     return seed_bets(rows)
 
 

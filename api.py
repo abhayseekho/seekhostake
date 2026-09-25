@@ -1092,11 +1092,12 @@ def api_seed(request: Request):
 
 @app.post("/api/admin/reset-book")
 def api_reset_book(request: Request):
-    """Wipe every bet and reload the current seed. Only while the race hasn't started —
-    the escape hatch for seed corrections (e.g. full names) on an already-seeded book."""
+    """Wipe every bet, roll the race back to pre-race (discarding any lap results), and reload the
+    seed. The full-reset button — usable any time before settlement, not just to correct a seed
+    before anything's happened (rehearsals need to roll back after running laps too)."""
     u = _require_owner(request)
-    if store.get_race()["phase"] != "prerace":
-        raise HTTPException(400, "race_started")
+    if store.load_settlement() is not None:
+        raise HTTPException(400, "already_settled")
     n = store.reset_book(SEED_BETS, u["key"])
     _notify()
     return {"ok": True, "seeded": n}

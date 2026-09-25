@@ -54,7 +54,7 @@ MIN_BET_AMOUNT = 500
 # loss on the fixed book can never exceed FIXED_HOUSE_CAP. Unlike the parimutuel book (house strictly
 # ≥ 0), the fixed book lets the house lose — but only up to that cap, by construction.
 FIXED_ODDS_MARGIN = 0.10       # house edge (overround) baked into every quoted price — the house's 10% cut
-FIXED_HOUSE_CAP = 10_000       # max the house will risk losing on any one outcome of a market
+FIXED_HOUSE_CAP = 50_000       # max the house will risk losing on any one outcome of a market
 MATCH_BANSOD_PRIOR = 0.80      # organiser's read: Bansod wins the MATCH 80% of the time
 FIXED_PER_LAP_BANSOD = 0.715   # per-lap Bansod prob that yields ≈80% match (p²·(3−2p) ≈ 0.80),
                                # used to price the lap / score / distance / comeback markets coherently

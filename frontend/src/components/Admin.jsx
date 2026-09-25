@@ -111,7 +111,7 @@ export default function Admin({ state, refresh }) {
             <span className={house.fixed_exposure < 0 ? "text-bad" : "text-khuseel"}>
               {house.fixed_exposure < 0 ? "−" : "+"}{inr(Math.abs(house.fixed_exposure))}
             </span>
-            <span className="text-faint font-normal"> / cap {inr(house.fixed_cap)}</span>
+            <span className="text-faint font-normal"> · uncapped</span>
           </span>
         </div>
       )}

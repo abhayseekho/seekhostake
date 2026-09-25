@@ -590,10 +590,10 @@ def api_state(request: Request, as_user: bool = False):
                         "seed_cap": rules.max_house_seed(human_pool),
                         "floor": rules.house_floor(by_market, r["laps"])}
         if FIXED_ODDS_ENABLED:
-            # Worst-case house P&L on the fixed book across every remaining outcome (≥ −cap by
-            # construction). Negative = the organiser is currently exposed on locked fixed bets.
+            # Worst-case house P&L on the fixed book across every remaining outcome. Negative = the
+            # organiser is currently exposed on locked fixed bets. Pricing is uncapped, so this is
+            # unbounded and is the organiser's only live read on fixed-book risk.
             out["house"]["fixed_exposure"] = rules.fixed_house_floor(by_market, r["laps"])
-            out["house"]["fixed_cap"] = rules.FIXED_HOUSE_CAP
     return out
 
 

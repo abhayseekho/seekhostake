@@ -50,11 +50,17 @@ MIN_BET_AMOUNT = 500
 # Optional per-bet FIXED odds that live ALONGSIDE the parimutuel pool (see settle_all): a bet is
 # "fixed" iff it carries a locked_odds value; every other bet stays a pool bet and settles exactly
 # as before. Fixed bets are priced from win-probability (Bansod-tilted, the organiser's read) with
-# a house margin, and the offered odds are SHORTENED as money loads a side so the house's worst-case
-# loss on the fixed book can never exceed FIXED_HOUSE_CAP. Unlike the parimutuel book (house strictly
-# ≥ 0), the fixed book lets the house lose — but only up to that cap, by construction.
+# a house margin. Unlike the parimutuel book (house strictly ≥ 0), the fixed book lets the house
+# lose, and since 2026-09-25 (Abhay) that loss is UNCAPPED: every bet is quoted at the board price
+# regardless of how much money has already loaded the outcome.
+#
+# The previous liability cap shortened the offered odds as a side filled, which on a longshot hit a
+# wall almost immediately: Khuseel prices at 4.50×, so ~₹2,800 of Khuseel money exhausted a ₹10,000
+# cap and the pricer collapsed his quote to 1.00× — a bet with zero upside and full downside, shown
+# on the board underneath a favourite quoted at 1.13×. Uncapped pricing is the organiser's deliberate
+# choice to run a real book: the underdog stays honestly priced, and the house carries the exposure.
+# `fixed_house_floor` reports that exposure live on the admin panel; it is now unbounded, so watch it.
 FIXED_ODDS_MARGIN = 0.10       # house edge (overround) baked into every quoted price — the house's 10% cut
-FIXED_HOUSE_CAP = 10_000       # max the house will risk losing on any one outcome of a market
 MATCH_BANSOD_PRIOR = 0.80      # organiser's read: Bansod wins the MATCH 80% of the time
 FIXED_PER_LAP_BANSOD = 0.715   # per-lap Bansod prob that yields ≈80% match (p²·(3−2p) ≈ 0.80),
                                # used to price the lap / score / distance / comeback markets coherently
@@ -316,34 +322,29 @@ def fixed_prob(market_id, outcome):
 
 
 def fixed_base_odds(market_id, outcome):
-    """The board price for an outcome before any exposure shortening: fair odds from probability
-    with the house margin, clamped to [1.05, MAX_PAYOUT_MULT]."""
+    """The board price for an outcome: fair odds from probability with the house margin, clamped
+    to [1.05, MAX_PAYOUT_MULT]."""
     p = fixed_prob(market_id, outcome)
     if p <= 0:
         return MAX_PAYOUT_MULT
     return round(max(1.05, min(MAX_PAYOUT_MULT, (1 - FIXED_ODDS_MARGIN) / p)), 3)
 
 
-def fixed_offer_odds(market_id, outcome, stake, fixed_pool_before, outcome_liability_before,
-                     cap=FIXED_HOUSE_CAP):
-    """Odds to LOCK for a new fixed bet of `stake` on `outcome`, given the fixed book so far
-    (fixed_pool_before = Σ fixed stakes in this market; outcome_liability_before = Σ stake×odds
-    already locked on this outcome). Starts from the board price, then shortens so that after this
-    bet the outcome's total liability can't exceed fixed_pool_after·(1−rake) + cap — which bounds
-    the house's worst-case loss on this outcome to `cap`. Monotonic: pool only grows and an
-    outcome's liability only grows when a bet lands on it, so the bound holds at settlement too."""
+def fixed_offer_odds(market_id, outcome, stake, fixed_pool_before=0, outcome_liability_before=0):
+    """Odds to LOCK for a new fixed bet of `stake` on `outcome`. Uncapped (see the module header):
+    every bet gets the board price no matter how the book is loaded, so an outcome's quote is a
+    function of probability alone and the favourite is always shorter than the underdog. The book
+    arguments are retained so callers need not change and so exposure-aware pricing can return
+    later; they do not affect the quote."""
     if stake <= 0:
         return None
-    base = fixed_base_odds(market_id, outcome)
-    headroom = fixed_pool_before * (1 - HOUSE_RAKE) + cap - outcome_liability_before
-    l_max = max(1.0, 1 + headroom / stake)
-    return round(min(base, l_max), 3)
+    return fixed_base_odds(market_id, outcome)
 
 
 def settle_market_fixed(market_id, fixed_bets, laps):
     """Settle the FIXED sub-book of one market: each winner is paid stake × its own locked_odds;
     losers get nothing; a void market refunds in full. House take = pool − paid (may be NEGATIVE —
-    that is the house covering a locked payout, bounded to the cap by fixed_offer_odds at lock time).
+    that is the house covering a locked payout, and since pricing is uncapped it is unbounded).
     No rake and no swimmer cut here: the house's edge on fixed bets is the margin already priced in."""
     m = MARKET_BY_ID[market_id]
     pool = sum(int(b["amount"]) for b in fixed_bets)
@@ -450,9 +451,9 @@ def house_floor(bets_by_market, laps=()):
     """The organiser's GUARANTEED minimum take on the PARIMUTUEL (pool) book: settle every market
     under every possible race outcome and take the worst total, counting pool bets only. Seed
     changes must keep this >= 0 — the literal 'house never loses' invariant for the pool book,
-    enforced at the API. Fixed-odds bets are excluded here on purpose: they carry their own,
-    separately-capped exposure (see fixed_house_floor), and folding them in would make this go
-    negative and wrongly trip the seed guards / volatility breaker that this number drives."""
+    enforced at the API. Fixed-odds bets are excluded here on purpose: they carry their own
+    exposure (see fixed_house_floor), and folding them in would make this go negative and wrongly
+    trip the seed guards / volatility breaker that this number drives."""
     scripts = race_scripts(laps)
     if not scripts:
         return 0
@@ -462,8 +463,8 @@ def house_floor(bets_by_market, laps=()):
 
 def fixed_house_floor(bets_by_market, laps=()):
     """Worst-case house P&L on the FIXED book across every remaining race outcome. Negative = the
-    house is exposed; by construction (fixed_offer_odds) it can never be worse than −cap per
-    outcome. For the admin's live exposure view — not a guard, since fixed exposure is expected."""
+    house is exposed, and since pricing is uncapped that exposure is unbounded — this is the number
+    to watch. For the admin's live exposure view — not a guard, since fixed exposure is expected."""
     scripts = race_scripts(laps)
     if not scripts:
         return 0

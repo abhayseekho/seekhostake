@@ -227,10 +227,10 @@ def my_approved(key):
 
 
 def fixed_quote(cx, market, outcome, stake):
-    """The FIXED odds to lock for a new bet of `stake` on (market, outcome): probability-priced and
-    shortened by rules.fixed_offer_odds so the house's worst-case loss on this outcome stays within
-    the cap. Priced against the current fixed book — every already-committed (approved) AND in-flight
-    (pending) fixed bet — so concurrent requests can't collectively breach the cap. Read inside the
+    """The FIXED odds to lock for a new bet of `stake` on (market, outcome), probability-priced by
+    rules.fixed_offer_odds. The current fixed book — every already-committed (approved) AND in-flight
+    (pending) fixed bet — is still summed and passed through, so exposure-aware pricing can be
+    reinstated without touching callers; today's uncapped pricing ignores it. Read inside the
     caller's transaction for a consistent snapshot. Pool bets never call this (locked_odds stays NULL)."""
     rows = cx.execute(select(bets).where(
         bets.c.market == market,

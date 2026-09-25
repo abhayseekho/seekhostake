@@ -492,11 +492,76 @@ def test_market_book_sorted_by_amount_desc():
     assert amounts == sorted(amounts, reverse=True)
 
 
-def test_market_book_empty_for_side_market_with_no_bets():
+def test_market_book_empty_for_side_market_with_no_bets_or_house_seed():
+    """With auto side-seeding OFF (forced via monkeypatch below isn't needed here — side_seeds
+    with per_market=0 is the real "no liquidity at all" case), a side market's book is empty."""
     admin = admin_client()
-    admin.post("/api/admin/seed")  # match-only seed, no side-seeds
+    admin.post("/api/admin/seed")
+    admin.post("/api/admin/side-seeds", json={"per_market": 0})  # explicitly clear the auto-seed
     lap3 = next(m for m in admin.get("/api/state").json()["markets"] if m["id"] == "lap3")
     assert lap3["bets"] == []
+
+
+def test_seed_auto_seeds_side_markets():
+    """A side market used to sit blank (no house liquidity, no bettor -> no odds to quote) until
+    someone remembered the separate 'Seed side odds' button. /api/admin/seed now folds that in,
+    so every non-main market has a real, floor-guarded price the moment the main book does."""
+    admin = admin_client()
+    r = admin.post("/api/admin/seed")
+    assert r.status_code == 200 and r.json()["seeded"] == 18
+
+    state = admin.get("/api/state").json()
+    for m in state["markets"]:
+        if m["main"]:
+            continue
+        assert m["bets"] != [], f"{m['id']} has no liquidity after seed"
+        assert all(b["key"].startswith("house:") for b in m["bets"])
+        assert all(o["est_mult"] is not None for o in m["outcomes"]), f"{m['id']} has a blank odds"
+    assert state["house"]["floor"] >= 0
+
+
+def test_seed_is_idempotent_and_does_not_reseed_side_markets_twice():
+    """seed_bets() refuses on an already-seeded book (returns 0) — the auto side-seed must only
+    fire on the call that actually loaded the book, not silently re-fire (and re-bill house
+    liquidity) on every later no-op call to the same endpoint."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    before = sorted((b["market"], b["outcome"], b["amount"])
+                    for b in store.approved_bets() if b["key"].startswith("house:"))
+    r = admin.post("/api/admin/seed")
+    assert r.status_code == 200 and r.json()["seeded"] == 0
+    after = sorted((b["market"], b["outcome"], b["amount"])
+                   for b in store.approved_bets() if b["key"].startswith("house:"))
+    assert before == after
+
+
+def test_reset_book_auto_seeds_side_markets():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    r = admin.post("/api/admin/reset-book")
+    assert r.status_code == 200 and r.json()["seeded"] == 18
+
+    lap2 = next(m for m in admin.get("/api/state").json()["markets"] if m["id"] == "lap2")
+    assert lap2["bets"] != []
+    assert all(b["key"].startswith("house:") for b in lap2["bets"])
+
+
+def test_side_seed_floor_negative_never_blocks_seed_but_still_errors_the_manual_endpoint(monkeypatch):
+    """The auto-seed hook must never fail the primary /seed or /reset-book action just because
+    house_floor came back negative — it should quietly skip (leaving zero side liquidity, same as
+    if the button was never pressed) and let the real seed go through. The manual endpoint, called
+    directly, must still surface the failure loudly (400) — same contract as before the refactor
+    that let both paths share this logic."""
+    admin = admin_client()
+    monkeypatch.setattr(api.rules, "house_floor", lambda *a, **k: -50)
+
+    r = admin.post("/api/admin/seed")
+    assert r.status_code == 200 and r.json()["seeded"] == 18  # main seed unaffected
+    assert not any(b["key"].startswith("house:") for b in store.approved_bets())  # reverted, not left half-applied
+
+    r2 = admin.post("/api/admin/side-seeds", json={"per_market": 200, "tilt": True})
+    assert r2.status_code == 400 and r2.json()["detail"].startswith("floor_negative")
+    assert not any(b["key"].startswith("house:") for b in store.approved_bets())
 
 
 def test_bettor_never_sees_house_internals():
@@ -646,9 +711,10 @@ def test_concurrent_approvals_on_same_market_dont_lose_either_bet():
     assert results[0].status_code == 200, results[0].json()
     assert results[1].status_code == 200, results[1].json()
 
-    approved = store.approved_bets("lap1")
-    assert {b["display_name"] for b in approved} == {"Alice Racer", "Bob Punter"}
-    assert sum(b["amount"] for b in approved) == 1000  # neither approval lost the other's write
+    # human bets only — lap1 also carries the auto side-seed's own House liquidity row now
+    human = [b for b in store.approved_bets("lap1") if not b["key"].startswith("house")]
+    assert {b["display_name"] for b in human} == {"Alice Racer", "Bob Punter"}
+    assert sum(b["amount"] for b in human) == 1000  # neither approval lost the other's write
 
 
 def test_concurrent_submits_same_person_same_market_land_as_exactly_one_pending():

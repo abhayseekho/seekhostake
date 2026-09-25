@@ -238,7 +238,17 @@ def fixed_quote(cx, market, outcome, stake):
         bets.c.locked_odds.isnot(None))).mappings().all()
     fixed_pool = sum(int(r["amount"]) for r in rows)
     liability = sum(int(r["amount"]) * float(r["locked_odds"]) for r in rows if r["outcome"] == outcome)
-    return rules.fixed_offer_odds(market, outcome, stake, fixed_pool, liability)
+    # Crowd's money split (all human bets on this market, pool + fixed) → the demand weight blended
+    # into the quoted price, matching the live board (api_state).
+    all_rows = cx.execute(select(bets).where(
+        bets.c.market == market,
+        bets.c.status.in_(("approved", "pending")),
+        bets.c.key.notlike("house%"))).mappings().all()
+    money_by_outcome = {}
+    for r in all_rows:
+        money_by_outcome[r["outcome"]] = money_by_outcome.get(r["outcome"], 0) + int(r["amount"])
+    return rules.fixed_offer_odds(market, outcome, stake, fixed_pool, liability,
+                                  money_by_outcome=money_by_outcome)
 
 
 def submit_bet(key, display_name, market, outcome, amount, source="portal", note="", fixed=False):

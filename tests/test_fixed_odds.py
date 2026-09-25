@@ -118,13 +118,50 @@ def test_board_is_bansod_tilted():
     assert E.fixed_base_odds("match", "bansod") < E.fixed_base_odds("match", "khuseel")
 
 
+def test_demand_weighting_blends_read_with_money():
+    """80% the organiser's read, 20% the money. With money piled on Bansod, Bansod's blended prob
+    rises above the 80% read → its odds shorten; Khuseel's lengthen. No money → pure read."""
+    # pure read (no money) — anchored to the 80% call
+    assert E.fixed_base_odds("match", "bansod") == E.fixed_base_odds("match", "bansod", None)
+    read_bansod = E.fixed_base_odds("match", "bansod")
+    # money almost entirely on Bansod pulls the blend toward Bansod → shorter Bansod odds
+    heavy_bansod = {"bansod": 90000, "khuseel": 10000}
+    assert E.fixed_base_odds("match", "bansod", heavy_bansod) < read_bansod
+    assert E.fixed_base_odds("match", "khuseel", heavy_bansod) > E.fixed_base_odds("match", "khuseel")
+    # the blend is exactly FIXED_PRIOR_WEIGHT·read + (1-w)·moneyshare
+    p = E.fixed_blended_prob("match", "bansod", heavy_bansod)
+    assert abs(p - (E.FIXED_PRIOR_WEIGHT * 0.80 + (1 - E.FIXED_PRIOR_WEIGHT) * 0.90)) < 1e-9
+
+
+def test_long_shots_differentiate_under_the_higher_fixed_cap():
+    """The two Khuseel scores used to both flatten at the 7x parimutuel cap; under FIXED_MAX_ODDS
+    they price distinctly (2–0 rarer than 2–1, so it pays more)."""
+    k20 = E.fixed_base_odds("score", "k20")
+    k21 = E.fixed_base_odds("score", "k21")
+    assert k20 > k21 > 1.0
+    assert k20 <= E.FIXED_MAX_ODDS
+
+
 def test_offer_odds_are_stable_as_a_side_fills():
     """Uncapped pricing: a loaded outcome is quoted exactly like an empty one. The regression this
     locks down is the live board showing Khuseel (a 20% shot) at 1.00× while Bansod (80%) sat at
-    1.13× — the favourite quoted LONGER than the underdog, because Khuseel's side had filled."""
+    1.13× — the favourite quoted LONGER than the underdog, purely because Khuseel's side had
+    filled and the old cap shortened his price into the floor."""
     empty = E.fixed_offer_odds("match", "khuseel", 5000, 0, 0)
     loaded = E.fixed_offer_odds("match", "khuseel", 5000, 5000, 20000)
     swamped = E.fixed_offer_odds("match", "khuseel", 5000, 500_000, 2_000_000)
     assert empty == loaded == swamped == E.fixed_base_odds("match", "khuseel")
-    # and the ordering that was inverted on the live board always holds now
+    # the ordering that was inverted on the live board now always holds
     assert E.fixed_offer_odds("match", "bansod", 5000, 500_000, 0) < loaded
+
+
+def test_favourite_is_never_quoted_longer_than_the_underdog():
+    """The live symptom, asserted directly across every two-way market and any money split: the
+    side the read favours must always be the shorter price."""
+    for mid in ("match", "lap1", "lap2", "lap3"):
+        for money in (None, {"khuseel": 31050, "bansod": 32000},
+                      {"khuseel": 100000, "bansod": 500}, {"khuseel": 500, "bansod": 100000}):
+            k = E.fixed_offer_odds(mid, "khuseel", 500, 999_999, 9_999_999, money_by_outcome=money)
+            b = E.fixed_offer_odds(mid, "bansod", 500, 999_999, 0, money_by_outcome=money)
+            assert b < k, (mid, money, b, k)
+            assert min(b, k) >= 1.05

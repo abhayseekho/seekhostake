@@ -896,41 +896,58 @@ class SideSeeds(BaseModel):
     tilt: bool = True      # split by outcome priors (Bansod skill edge) vs evenly
 
 
-@app.post("/api/admin/side-seeds")
-def api_side_seeds(request: Request, body: SideSeeds):
-    """House liquidity on every side-market outcome so boards open with informed odds.
-    tilt=true splits each market's liquidity by outcome priors (BANSOD_PRIOR), so likelier
-    outcomes open short and long shots open attractive."""
-    u = _require_owner(request)
-    if body.per_market < 0 or body.per_market > 2000:
-        raise HTTPException(400, "bad_amount")
-    if store.load_settlement() is not None:
-        raise HTTPException(400, "already_settled")
+def _side_seed_rows(per_market, tilt):
     rows = []
     for m in rules.MARKETS:
         if m.get("main"):
             continue
         oids = [oid for oid, _ in m["outcomes"]]
-        if body.per_market == 0:
+        if per_market == 0:
             rows += [(m["id"], oid, 0) for oid in oids]
             continue
-        if body.tilt:
+        if tilt:
             pri = rules.outcome_priors(m["id"])
-            amts = {oid: max(10, int(round(pri[oid] * body.per_market / 10) * 10)) for oid in oids}
+            amts = {oid: max(10, int(round(pri[oid] * per_market / 10) * 10)) for oid in oids}
         else:
-            amts = {oid: body.per_market // len(oids) for oid in oids}
+            amts = {oid: per_market // len(oids) for oid in oids}
         rows += [(m["id"], oid, amts[oid]) for oid in oids]
+    return rows
+
+
+def _apply_side_seeds(per_market, tilt, admin_email):
+    """House liquidity on every side-market outcome so boards open with informed odds instead of
+    a blank dash (no bettor, no odds to quote). tilt=true splits each market's liquidity by
+    outcome priors (BANSOD_PRIOR), so likelier outcomes open short and long shots open
+    attractive. Shared by the manual /api/admin/side-seeds endpoint AND the auto-seed-on-book-
+    load hook (api_seed/api_reset_book) — same money-safety net either way: verify house_floor
+    afterward and revert immediately if this would ever leave the house exposed. Never raises;
+    callers that must fail loudly on a bad floor (the manual endpoint) check r["ok"] themselves,
+    callers that must not let this block a bigger action (the auto-seed hooks) just log it."""
+    rows = _side_seed_rows(per_market, tilt)
     prev = {(b["market"], b["outcome"]): b["amount"]
             for b in store.approved_bets() if b["key"].startswith("house:")}
-    n = store.seed_side_markets(rows, u["key"])
+    n = store.seed_side_markets(rows, admin_email)
     floor = rules.house_floor(store.approved_by_market(), store.get_race()["laps"])
     if floor < 0:  # would create a losing scenario — restore previous liquidity and refuse
         restore = [(mid, oid, prev.get((mid, oid), 0)) for mid, oid, _ in rows]
-        store.seed_side_markets(restore, u["key"])
-        raise HTTPException(400, f"floor_negative:{floor}")
+        store.seed_side_markets(restore, admin_email)
+        return {"ok": False, "floor": floor, "outcomes_seeded": 0}
+    return {"ok": True, "floor": floor, "outcomes_seeded": n}
+
+
+@app.post("/api/admin/side-seeds")
+def api_side_seeds(request: Request, body: SideSeeds):
+    u = _require_owner(request)
+    if body.per_market < 0 or body.per_market > 2000:
+        raise HTTPException(400, "bad_amount")
+    if store.load_settlement() is not None:
+        raise HTTPException(400, "already_settled")
+    r = _apply_side_seeds(body.per_market, body.tilt, u["key"])
+    if not r["ok"]:
+        raise HTTPException(400, f"floor_negative:{r['floor']}")
     _notify()
-    return {"ok": True, "outcomes_seeded": n, "per_market": body.per_market,
-            "tilt": body.tilt, "floor": floor}
+    return {"ok": True, "outcomes_seeded": r["outcomes_seeded"], "per_market": body.per_market,
+            "tilt": body.tilt, "floor": r["floor"]}
 
 
 class VoidBet(BaseModel):
@@ -1083,9 +1100,17 @@ def api_projected_payouts(request: Request):
 
 @app.post("/api/admin/seed")
 def api_seed(request: Request):
-    _require_owner(request)
+    u = _require_owner(request)
     n = store.seed_bets(SEED_BETS)
     if n:
+        # Side markets used to sit at a blank "no odds yet" until someone remembered to press
+        # the separate "Seed side odds" button — easy to forget, and a market with zero house
+        # liquidity shows nothing to bet against until a human happens to bet both sides. Folding
+        # it into the book load makes every side market start with a real (floor-guarded) price
+        # the moment the main book does, with no extra step.
+        r = _apply_side_seeds(200, True, u["key"])
+        if not r["ok"]:
+            log.warning("auto side-seed on /seed skipped: floor would go negative (%d)", r["floor"])
         _notify()
     return {"ok": True, "seeded": n}
 
@@ -1099,6 +1124,10 @@ def api_reset_book(request: Request):
     if store.load_settlement() is not None:
         raise HTTPException(400, "already_settled")
     n = store.reset_book(SEED_BETS, u["key"])
+    if n:
+        r = _apply_side_seeds(200, True, u["key"])
+        if not r["ok"]:
+            log.warning("auto side-seed on /reset-book skipped: floor would go negative (%d)", r["floor"])
     _notify()
     return {"ok": True, "seeded": n}
 

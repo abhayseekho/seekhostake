@@ -457,6 +457,48 @@ def test_same_person_same_market_opposite_outcome_replaces_not_doubles():
 
 # ── 4. sanitization: bettor vs admin, and admin's own "view as user" ─────────────────────────────
 
+def test_market_book_shows_on_every_market_not_just_match():
+    """The by-name approved-bettor list used to exist only for the match market — now every market
+    carries the same `bets` field, sanitized the same way (house rows owner-only)."""
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    admin.post("/api/admin/side-seeds", json={"per_market": 200, "tilt": True})
+
+    alice = user_client("Alice")
+    r = alice.post("/api/bets", json={"market": "lap1", "outcome": "khuseel", "amount": 500})
+    assert r.status_code == 200
+    approve_all_pending(admin)
+
+    admin_lap1 = next(m for m in admin.get("/api/state").json()["markets"] if m["id"] == "lap1")
+    assert any(b["display_name"] == "Alice" and b["side"] == "khuseel" and b["amount"] == 500
+               for b in admin_lap1["bets"])
+    assert any(b["key"].startswith("house") for b in admin_lap1["bets"])  # admin sees house rows
+
+    alice_lap1 = next(m for m in alice.get("/api/state").json()["markets"] if m["id"] == "lap1")
+    assert any(b["display_name"] == "Alice" and b["amount"] == 500 for b in alice_lap1["bets"])
+    assert not any(b["key"].startswith("house") for b in alice_lap1["bets"])  # hidden from bettor
+
+
+def test_market_book_sorted_by_amount_desc():
+    admin = admin_client()
+    admin.post("/api/admin/seed")
+    alice = user_client("Alice")
+    bob = user_client("Bob")
+    alice.post("/api/bets", json={"market": "lap2", "outcome": "bansod", "amount": 600})
+    bob.post("/api/bets", json={"market": "lap2", "outcome": "bansod", "amount": 1500})
+    approve_all_pending(admin)
+    lap2 = next(m for m in admin.get("/api/state").json()["markets"] if m["id"] == "lap2")
+    amounts = [b["amount"] for b in lap2["bets"] if not b["key"].startswith("house")]
+    assert amounts == sorted(amounts, reverse=True)
+
+
+def test_market_book_empty_for_side_market_with_no_bets():
+    admin = admin_client()
+    admin.post("/api/admin/seed")  # match-only seed, no side-seeds
+    lap3 = next(m for m in admin.get("/api/state").json()["markets"] if m["id"] == "lap3")
+    assert lap3["bets"] == []
+
+
 def test_bettor_never_sees_house_internals():
     admin = admin_client()
     admin.post("/api/admin/seed")

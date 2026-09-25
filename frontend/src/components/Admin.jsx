@@ -4,6 +4,7 @@ import { SIDES, LABEL, SIDE_TEXT, REASON_TEXT } from "../lib/constants.js";
 import { TONE_TEXT, tone } from "../lib/theme.js";
 import { inr } from "../lib/format.js";
 import ProjectedPayouts from "./ProjectedPayouts.jsx";
+import MarketBook from "./MarketBook.jsx";
 import BetLedger from "./BetLedger.jsx";
 
 // The cashier's speed tool during the live window (audit §8) — the information architecture here
@@ -217,6 +218,15 @@ export default function Admin({ state, refresh }) {
           <p className="text-2xs text-gold mt-2">Starting lap 2 closes all betting; unapproved requests are rejected.</p>
         )}
       </div>
+
+      <details className="border-t border-edge/60 pt-3" open>
+        <summary className="cursor-pointer text-2xs font-bold tracking-label uppercase text-faint
+          hover:text-dim select-none transition-colors duration-quick">
+          Full book — every approved bet, every market</summary>
+        <div className="mt-3 space-y-4">
+          {markets.map((m) => <MarketBook key={m.id} market={m} isOwner refresh={refresh} />)}
+        </div>
+      </details>
 
       {race.phase !== "settled" && (
         <details className="border-t border-edge/60 pt-3" open>

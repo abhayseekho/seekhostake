@@ -8,7 +8,7 @@ import MarketCard from "./components/MarketCard.jsx";
 import PoolBar from "./components/PoolBar.jsx";
 import BetSlip from "./components/BetSlip.jsx";
 import MyBets from "./components/MyBets.jsx";
-import BookTable from "./components/BookTable.jsx";
+import MarketBook from "./components/MarketBook.jsx";
 import Settlement from "./components/Settlement.jsx";
 import Admin from "./components/Admin.jsx";
 
@@ -147,8 +147,13 @@ export default function App() {
               <MyBets markets={state.markets} refresh={refresh} />
             </>
           )}
-          <BookTable bets={state.bets}
-            isOwner={state.me.is_owner && !settlement} refresh={refresh} />
+          <div className="bg-card border border-edge rounded-2xl p-4 space-y-4">
+            <h2 className="text-2xs font-bold tracking-label text-faint uppercase">Approved bets — every market</h2>
+            {state.markets.map((m) => (
+              <MarketBook key={m.id} market={m}
+                isOwner={state.me.is_owner && !settlement} refresh={refresh} />
+            ))}
+          </div>
         </div>
         <div className="hidden lg:block sticky top-4 space-y-4">{slip}</div>
       </div>

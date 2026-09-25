@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timezone
 
 from sqlalchemy import (create_engine, MetaData, Table, Column, Integer, String, Text,
-                        DateTime, select, update, text)
+                        DateTime, Float, select, update, text)
 
 import engine as rules
 
@@ -41,6 +41,12 @@ bets = Table(
     Column("created_at", DateTime, nullable=False),
     Column("decided_at", DateTime),
     Column("decided_by", String(200)),
+    # Odds (est_mult) snapshotted at the moment the bet was placed, so the bettor's quoted price
+    # doesn't drift as later money moves the pool. DISPLAY-ONLY: settlement is still parimutuel and
+    # never reads this column, so the "house never loses" guarantee is untouched — this freezes the
+    # NUMBER SHOWN, not the payout. NULL for house liquidity rows (not paid out to a person) and for
+    # any outcome that had no price at bet time.
+    Column("locked_odds", Float),
 )
 
 race = Table(
@@ -71,6 +77,7 @@ def init():
         for ddl in (
             "ALTER TABLE bets ADD COLUMN market VARCHAR(30) DEFAULT 'match'",
             "ALTER TABLE bets ADD COLUMN outcome VARCHAR(20) DEFAULT ''",
+            "ALTER TABLE bets ADD COLUMN locked_odds DOUBLE PRECISION",
             "ALTER TABLE race ADD COLUMN suspended TEXT DEFAULT '[]'",
         ):
             try:
@@ -219,16 +226,35 @@ def my_approved(key):
     return [dict(r) for r in rows]
 
 
-def submit_bet(key, display_name, market, outcome, amount, source="portal", note=""):
-    """One live pending request per person PER MARKET: a new submit replaces the older one."""
+def fixed_quote(cx, market, outcome, stake):
+    """The FIXED odds to lock for a new bet of `stake` on (market, outcome): probability-priced and
+    shortened by rules.fixed_offer_odds so the house's worst-case loss on this outcome stays within
+    the cap. Priced against the current fixed book — every already-committed (approved) AND in-flight
+    (pending) fixed bet — so concurrent requests can't collectively breach the cap. Read inside the
+    caller's transaction for a consistent snapshot. Pool bets never call this (locked_odds stays NULL)."""
+    rows = cx.execute(select(bets).where(
+        bets.c.market == market,
+        bets.c.status.in_(("approved", "pending")),
+        bets.c.locked_odds.isnot(None))).mappings().all()
+    fixed_pool = sum(int(r["amount"]) for r in rows)
+    liability = sum(int(r["amount"]) * float(r["locked_odds"]) for r in rows if r["outcome"] == outcome)
+    return rules.fixed_offer_odds(market, outcome, stake, fixed_pool, liability)
+
+
+def submit_bet(key, display_name, market, outcome, amount, source="portal", note="", fixed=False):
+    """One live pending request per person PER MARKET: a new submit replaces the older one.
+    fixed=True prices and freezes fixed odds onto the row (locked_odds); otherwise it's a pool bet
+    (locked_odds NULL) and settles parimutuel exactly as before."""
     with engine.begin() as cx:
         cx.execute(update(bets)
                    .where(bets.c.key == key, bets.c.status == "pending", bets.c.market == market)
                    .values(status="cancelled", note="replaced by newer request", decided_at=_now()))
+        locked = fixed_quote(cx, market, outcome, amount) if fixed else None
         res = cx.execute(bets.insert().values(
             key=key, display_name=display_name, market=market, outcome=outcome,
             side=outcome if outcome in ("khuseel", "bansod") else "",
-            amount=amount, status="pending", source=source, note=note, created_at=_now()))
+            amount=amount, status="pending", source=source, note=note, created_at=_now(),
+            locked_odds=locked))
     return res.inserted_primary_key[0]
 
 

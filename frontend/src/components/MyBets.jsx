@@ -27,7 +27,13 @@ export default function MyBets({ markets, refresh }) {
         <div key={i} className={`flex justify-between items-center text-sm py-2 pl-3 -ml-px border-l-2
           ${r.status === "PENDING" ? "border-gold" : "border-khuseel"}
           ${i < rows.length - 1 ? "border-b border-b-edge/50 mb-0.5" : ""}`}>
-          <span>{r.m.name} · <b className={TONE_TEXT[tone(r.outcome)]}>{labelOf(r.m, r.outcome)}</b> <span className="tabular-nums">{inr(r.amount)}</span></span>
+          <span>{r.m.name} · <b className={TONE_TEXT[tone(r.outcome)]}>{labelOf(r.m, r.outcome)}</b> <span className="tabular-nums">{inr(r.amount)}</span>
+            {r.locked_odds != null && (
+              <span className="block text-2xs text-dim tabular-nums mt-0.5">
+                Locked {r.locked_odds.toFixed(2)}× · win <b className="text-ink">{inr(r.locked_payout)}</b>
+              </span>
+            )}
+          </span>
           {r.status === "PENDING" ? (
             <span className="text-gold text-2xs font-bold tracking-label uppercase shrink-0 ml-2">
               Pending <button onClick={() => cancel(r.m.id)}

@@ -10,7 +10,7 @@ import { inr } from "../lib/format.js";
 // MyBets/MarketCard's "IN POOL" tag), and mobile placement, which App.jsx now handles by making
 // this panel a fixed bottom sheet on small screens once an outcome is picked, so placing a bet
 // never requires scrolling away from the market you just tapped.
-export default function BetSlip({ picked, refresh, onClear }) {
+export default function BetSlip({ picked, refresh, onClear, fixed }) {
   const [amount, setAmount] = useState("");
   const [msg, setMsg] = useState(null);
   const amt = parseInt(amount, 10) || 0;
@@ -65,13 +65,21 @@ export default function BetSlip({ picked, refresh, onClear }) {
             ))}
           </div>
           {amt > 0 && (picked.est ? (
-            <div className="flex justify-between items-baseline text-xs text-dim px-0.5">
-              <span>Indicative payout</span>
-              <b className="text-ink text-base tabular-nums">{inr(Math.floor(amt * picked.est))}</b>
+            <div className="px-0.5">
+              <div className="flex justify-between items-baseline text-xs text-dim">
+                <span>{fixed ? "Locked payout" : "Indicative payout"}</span>
+                <b className="text-ink text-base tabular-nums">{inr(Math.floor(amt * picked.est))}</b>
+              </div>
+              {fixed && (
+                <p className="text-2xs text-faint mt-1">
+                  Odds lock at the moment you bet — a larger stake may lock a touch shorter; you’ll see
+                  your exact locked odds under “My bets”.
+                </p>
+              )}
             </div>
           ) : (
             <p className="text-2xs text-faint px-0.5">
-              Odds form once bets are placed on this outcome.
+              {fixed ? "This outcome is closed." : "Odds form once bets are placed on this outcome."}
             </p>
           ))}
           <button disabled={amt < 1} onClick={submit}

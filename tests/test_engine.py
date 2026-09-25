@@ -33,8 +33,8 @@ def test_seeded_match_book():
     assert book["pool"] == 60050
     assert book["outcomes"]["khuseel"]["total"] == 28050
     assert book["outcomes"]["bansod"]["total"] == 32000
-    # est_mult reflects 5% rake + 30% swimmer cut on the losing pot
-    rake = int(0.05 * 60050)
+    # est_mult reflects the house rake + 30% swimmer cut on the losing pot
+    rake = int(engine.HOUSE_RAKE * 60050)
     assert book["outcomes"]["khuseel"]["est_mult"] == round(1 + 0.7 * (32000 - rake) / 28050, 3)
 
 
@@ -44,7 +44,7 @@ def test_match_settlement_sums_to_pool(laps, winner):
     assert res["won"] == winner
     paid = sum(r["payout"] for r in res["rows"])
     assert paid + res["swimmer"] + res["house"] == res["pool"] == 60050
-    assert res["house"] >= int(0.05 * 60050)  # rake + rounding remainders
+    assert res["house"] >= int(engine.HOUSE_RAKE * 60050)  # rake + rounding remainders
     for r in res["rows"]:
         if r["outcome"] == winner:
             assert r["payout"] >= r["stake"]
@@ -56,7 +56,7 @@ def test_house_seed_never_negative():
     """Seed capped at the rake → organiser net (rake + seed result) >= 0 for both outcomes."""
     human_pool = 60050
     cap = engine.max_house_seed(human_pool)
-    assert cap == 3002
+    assert cap == int(engine.HOUSE_RAKE * human_pool) == 6005
     for laps in (LAPS_B20, LAPS_K21):
         res = engine.settle_market("match", _match_bets(house_seed=cap), laps)
         seed_net = next(r["net"] for r in res["rows"] if r["key"] == "house")
@@ -78,7 +78,7 @@ def test_side_market_rake_and_sums():
     assert res["won"] == "yes"
     paid = sum(r["payout"] for r in res["rows"])
     assert paid + res["house"] == res["pool"] == 3800
-    assert res["house"] >= int(0.05 * 3800)
+    assert res["house"] >= int(engine.HOUSE_RAKE * 3800)
     assert res["swimmer"] == 0  # swimmer cut is main-market only
 
 
@@ -87,7 +87,7 @@ def test_score_market():
     res = engine.settle_market("score", bets, LAPS_K21)
     assert res["won"] == "k21"
     winner_row = next(r for r in res["rows"] if r["outcome"] == "k21")
-    assert winner_row["payout"] == 850 + (850 * (5100 - int(0.05 * 5100) - 850)) // 850
+    assert winner_row["payout"] == 850 + (850 * (5100 - int(engine.HOUSE_RAKE * 5100) - 850)) // 850
     # dead outcome (k20 after bansod takes lap 1) is unbettable but its money stays in the pool
     assert not engine.outcome_alive("score", "k20", LAPS_K21[:1])
     assert engine.outcome_alive("score", "k21", LAPS_K21[:1])
@@ -109,8 +109,8 @@ def test_comeback_market():
 def test_no_winner_backers():
     bets = _mk([("no", 1000)])
     res = engine.settle_market("distance", bets, LAPS_K21)  # yes wins, nobody on it
-    assert res["rows"][0]["payout"] == 950  # 95% refund, house keeps the rake
-    assert res["house"] == 50
+    assert res["rows"][0]["payout"] == 900  # 90% refund, house keeps the 10% rake
+    assert res["house"] == 100
 
 
 def test_settle_all_aggregate():

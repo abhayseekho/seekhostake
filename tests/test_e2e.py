@@ -844,7 +844,8 @@ def test_admin_manual_entry_and_name_login_share_identity():
     deepak = user_client("Deepak Rao")
     mine = next(m for m in deepak.get("/api/state").json()["markets"]
                if m["id"] == "match")["my_bet"]
-    assert mine == {"outcome": "khuseel", "amount": 900}
+    assert mine["outcome"] == "khuseel" and mine["amount"] == 900
+    assert mine["locked_odds"] is None  # pool bet (fixed-odds mode off) — no frozen odds
 
 
 def test_security_headers_present():

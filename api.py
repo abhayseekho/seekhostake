@@ -59,6 +59,10 @@ def _alert_slack(text: str) -> None:
 
 DEV = os.environ.get("SWIMBET_DEV", "").lower() in ("1", "true", "yes")
 AUTH_MODE = os.environ.get("AUTH_MODE", "oauth").lower()  # oauth | name
+# Fixed-odds mode: when on, NEW portal bets lock Bansod-tilted fixed odds at bet time and settle at
+# stake x locked odds (house loss capped, see engine.fixed_*); pre-existing pool bets are untouched
+# and keep settling parimutuel. Off by default so a deploy changes nothing until it's explicitly set.
+FIXED_ODDS_ENABLED = os.environ.get("FIXED_ODDS", "").lower() in ("1", "true", "yes")
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DIST = os.path.join(_HERE, "frontend", "dist")
 
@@ -520,6 +524,15 @@ def api_state(request: Request, as_user: bool = False):
         my = mine_all.get(mid)
         pend = my_pendings.get(mid)
         suspended = mid in r["suspended"]
+        # Fixed-odds headline board price per outcome: the odds a NEW bet of a nominal stake would
+        # lock right now, given the fixed book so far (shortens as a side fills). None when fixed mode
+        # is off or the outcome is dead. Depends on stake, so this is the small-stake headline; the
+        # exact figure is frozen onto the bet at submit and shown back via my_bet/my_pending.
+        fixed_here = [b for b in rows if b.get("locked_odds")]
+        fixed_pool = sum(int(b["amount"]) for b in fixed_here)
+        fixed_liab = {}
+        for b in fixed_here:
+            fixed_liab[b["outcome"]] = fixed_liab.get(b["outcome"], 0) + int(b["amount"]) * float(b["locked_odds"])
         # Same per-bettor visibility already shipped for the match market (house rows are the
         # organiser's own liquidity, not a bettor's cash, so they're owner-only) — generalized here
         # to every market so admin and bettors alike can see who's actually in each side book, not
@@ -536,12 +549,18 @@ def api_state(request: Request, as_user: bool = False):
             "pool": sum(t for t, _ in shown_totals.values()),
             "outcomes": [{"id": oid, "label": book["outcomes"][oid]["label"],
                           "est_mult": book["outcomes"][oid]["est_mult"],
+                          "fixed_odds": (rules.fixed_offer_odds(
+                              mid, oid, rules.MIN_BET_AMOUNT, fixed_pool, fixed_liab.get(oid, 0))
+                              if FIXED_ODDS_ENABLED and rules.outcome_alive(mid, oid, r["laps"]) else None),
                           "total": shown_totals[oid][0], "bettors": shown_totals[oid][1],
                           "alive": rules.outcome_alive(mid, oid, r["laps"])}
                          for oid, _ in m["outcomes"]],
-            "my_bet": my and {"outcome": my["outcome"], "amount": my["amount"]},
+            "my_bet": my and {"outcome": my["outcome"], "amount": my["amount"],
+                              "locked_odds": my.get("locked_odds"),
+                              "locked_payout": round(my["amount"] * my["locked_odds"]) if my.get("locked_odds") else None},
             "my_pending": pend and {"id": pend["id"], "outcome": pend["outcome"],
-                                    "amount": pend["amount"]},
+                                    "amount": pend["amount"], "locked_odds": pend.get("locked_odds"),
+                                    "locked_payout": round(pend["amount"] * pend["locked_odds"]) if pend.get("locked_odds") else None},
             "bets": market_bets,
         })
 
@@ -553,6 +572,7 @@ def api_state(request: Request, as_user: bool = False):
                  "wins": rules.lap_wins(r["laps"]),
                  "book_open": r["phase"] in rules.OPEN_PHASES and not deadline_passed},
         "markets": markets,
+        "fixed_odds": FIXED_ODDS_ENABLED,
         "betting_deadline_label": BETTING_DEADLINE_LABEL,
         "betting_closed": deadline_passed,
         "bets": sorted(({"key": b["key"], "display_name": b["display_name"],
@@ -569,6 +589,11 @@ def api_state(request: Request, as_user: bool = False):
         out["house"] = {"seed": seed and {"outcome": seed["outcome"], "amount": seed["amount"]},
                         "seed_cap": rules.max_house_seed(human_pool),
                         "floor": rules.house_floor(by_market, r["laps"])}
+        if FIXED_ODDS_ENABLED:
+            # Worst-case house P&L on the fixed book across every remaining outcome (≥ −cap by
+            # construction). Negative = the organiser is currently exposed on locked fixed bets.
+            out["house"]["fixed_exposure"] = rules.fixed_house_floor(by_market, r["laps"])
+            out["house"]["fixed_cap"] = rules.FIXED_HOUSE_CAP
     return out
 
 
@@ -595,7 +620,8 @@ def api_submit_bet(request: Request, body: BetIn):
             raise HTTPException(400, reason)
         if _is_arbitrage(u["key"], body.market, body.outcome, body.amount, r["laps"]):
             raise HTTPException(409, "arbitrage_bet")
-        bet_id = store.submit_bet(u["key"], u["name"], body.market, body.outcome, body.amount)
+        bet_id = store.submit_bet(u["key"], u["name"], body.market, body.outcome, body.amount,
+                                  fixed=FIXED_ODDS_ENABLED)
     _notify()
     return {"ok": True, "id": bet_id, "status": "pending"}
 
@@ -686,6 +712,10 @@ def api_all_bets(request: Request):
             "amount": b["amount"], "status": b["status"], "source": b["source"],
             "est_mult": est_mult,
             "est_payout": round(b["amount"] * est_mult) if est_mult else None,
+            # For fixed bets, the odds actually frozen at bet time (what settlement will pay) — distinct
+            # from est_mult, the live parimutuel estimate. None for pool bets.
+            "locked_odds": b.get("locked_odds"),
+            "locked_payout": round(b["amount"] * b["locked_odds"]) if b.get("locked_odds") else None,
             "created_at": b["created_at"].isoformat(),
             "decided_at": b["decided_at"].isoformat() if b["decided_at"] else None,
         })

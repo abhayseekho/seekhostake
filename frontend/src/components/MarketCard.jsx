@@ -1,5 +1,5 @@
 import { tone, TONE_TEXT, TONE_SEL } from "../lib/theme.js";
-import { inr } from "../lib/format.js";
+import { inr, oddsOf, oddsText } from "../lib/format.js";
 
 const labelOf = (market, oid) => {
   const o = market.outcomes.find((x) => x.id === oid);
@@ -34,7 +34,7 @@ export default function MarketCard({ market, picked, onPick }) {
           const dead = !o.alive;
           return (
             <button key={o.id} disabled={!market.open || dead}
-              onClick={() => onPick({ market: market.id, outcome: o.id, label: o.label, name: market.name, est: o.est_mult })}
+              onClick={() => onPick({ market: market.id, outcome: o.id, label: o.label, name: market.name, est: oddsOf(o) })}
               className={`relative rounded-xl px-3 py-2.5 text-left border-2 transition-all duration-quick bg-raise
                 ${sel ? TONE_SEL[tone(o.id)] : "border-edge"}
                 ${dead ? "opacity-50" : market.open ? "hover:border-dim" : "opacity-80"}
@@ -46,7 +46,7 @@ export default function MarketCard({ market, picked, onPick }) {
               )}
               <div className={`text-xs font-semibold ${TONE_TEXT[tone(o.id)]}`}>{o.label}</div>
               <div className="text-xl font-extrabold tabular-nums">
-                {dead ? "—" : o.est_mult ? o.est_mult.toFixed(2) + "×" : "—"}
+                {dead ? "—" : oddsText(oddsOf(o))}
               </div>
             </button>
           );

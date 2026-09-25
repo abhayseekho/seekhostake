@@ -2,7 +2,7 @@
 engine.py — pure betting logic for the Khuseel vs Bansod parimutuel pools. No I/O, no DB.
 
 House rules (ratified with Abhay, 2026-09-15):
-- Multiple parimutuel MARKETS, each its own pool. 5% house rake on every market.
+- Multiple parimutuel MARKETS, each its own pool. 10% house rake on every market.
 - MAIN market (match winner) additionally: 30% of the post-rake losing pot to the winning
   swimmer, 70% to winning bettors; and the house may hold a visible seed bet ("House"),
   capped at the expected rake so the organiser can never go net negative.
@@ -16,7 +16,7 @@ import re
 
 SIDES = ("khuseel", "bansod")
 SWIMMER_CUT = 0.30
-HOUSE_RAKE = 0.05
+HOUSE_RAKE = 0.10  # organiser's cut on the parimutuel (pool) book; odds/payouts derive from this
 
 # Payout cap: a thin market (a few hundred rupees on one side) can hand a single winning bet a
 # huge multiplier if the OTHER side is imbalanced enough (e.g. one large bet lands against thin
@@ -45,6 +45,19 @@ MAX_BET_AMOUNT = 1_000_000
 # admin's manual-entry/reconciliation tool has its own, separate validation — amount=0 there means
 # "void", not "too small", and cash-reconciliation corrections shouldn't be blocked by this floor).
 MIN_BET_AMOUNT = 500
+
+# ── Fixed-odds mode ────────────────────────────────────────────────────────────────────────────
+# Optional per-bet FIXED odds that live ALONGSIDE the parimutuel pool (see settle_all): a bet is
+# "fixed" iff it carries a locked_odds value; every other bet stays a pool bet and settles exactly
+# as before. Fixed bets are priced from win-probability (Bansod-tilted, the organiser's read) with
+# a house margin, and the offered odds are SHORTENED as money loads a side so the house's worst-case
+# loss on the fixed book can never exceed FIXED_HOUSE_CAP. Unlike the parimutuel book (house strictly
+# ≥ 0), the fixed book lets the house lose — but only up to that cap, by construction.
+FIXED_ODDS_MARGIN = 0.10       # house edge (overround) baked into every quoted price — the house's 10% cut
+FIXED_HOUSE_CAP = 10_000       # max the house will risk losing on any one outcome of a market
+MATCH_BANSOD_PRIOR = 0.80      # organiser's read: Bansod wins the MATCH 80% of the time
+FIXED_PER_LAP_BANSOD = 0.715   # per-lap Bansod prob that yields ≈80% match (p²·(3−2p) ≈ 0.80),
+                               # used to price the lap / score / distance / comeback markets coherently
 
 PHASES = ("prerace", "lap1", "break1", "lap2", "break2", "lap3", "finished", "settled")
 OPEN_PHASES = ("prerace", "break1")  # any betting at all
@@ -267,7 +280,13 @@ def settle_market(market_id, approved_bets, laps):
         swimmer = int(SWIMMER_CUT * max(distributable, 0))
         winners_pot = max(distributable, 0) - swimmer
     else:
-        winners_pot = pool - rake - win_total      # winners also get stakes back below
+        # Floor at 0 so a winner never receives LESS than their stake. On a very lopsided market
+        # the losing side may not cover a full rake (pool - win_total < rake); the house then simply
+        # takes the smaller rake it can, rather than clawing it out of winners' stakes. This mirrors
+        # market_book's displayed est_mult, which already floors at 1.0x via max(pool-rake, w)/w — so
+        # settlement can never pay under a multiplier the board showed. (At the old 5% rake this was
+        # masked; the 10% rake surfaces it on the thin-opposing-side markets.)
+        winners_pot = max(pool - rake - win_total, 0)  # winners also get stakes back below
 
     paid = 0
     for b in approved_bets:
@@ -287,14 +306,100 @@ def settle_market(market_id, approved_bets, laps):
             "void": False, "pool": pool, "house": house, "swimmer": swimmer, "rows": _net(rows)}
 
 
+# ── fixed-odds pricing & settlement ──────────────────────────────────────────────────────────────
+
+def fixed_prob(market_id, outcome):
+    """Win probability used to PRICE a fixed-odds bet, Bansod-tilted per the organiser's read."""
+    if market_id == "match":
+        return MATCH_BANSOD_PRIOR if outcome == "bansod" else 1 - MATCH_BANSOD_PRIOR
+    return outcome_priors(market_id, FIXED_PER_LAP_BANSOD)[outcome]
+
+
+def fixed_base_odds(market_id, outcome):
+    """The board price for an outcome before any exposure shortening: fair odds from probability
+    with the house margin, clamped to [1.05, MAX_PAYOUT_MULT]."""
+    p = fixed_prob(market_id, outcome)
+    if p <= 0:
+        return MAX_PAYOUT_MULT
+    return round(max(1.05, min(MAX_PAYOUT_MULT, (1 - FIXED_ODDS_MARGIN) / p)), 3)
+
+
+def fixed_offer_odds(market_id, outcome, stake, fixed_pool_before, outcome_liability_before,
+                     cap=FIXED_HOUSE_CAP):
+    """Odds to LOCK for a new fixed bet of `stake` on `outcome`, given the fixed book so far
+    (fixed_pool_before = Σ fixed stakes in this market; outcome_liability_before = Σ stake×odds
+    already locked on this outcome). Starts from the board price, then shortens so that after this
+    bet the outcome's total liability can't exceed fixed_pool_after·(1−rake) + cap — which bounds
+    the house's worst-case loss on this outcome to `cap`. Monotonic: pool only grows and an
+    outcome's liability only grows when a bet lands on it, so the bound holds at settlement too."""
+    if stake <= 0:
+        return None
+    base = fixed_base_odds(market_id, outcome)
+    headroom = fixed_pool_before * (1 - HOUSE_RAKE) + cap - outcome_liability_before
+    l_max = max(1.0, 1 + headroom / stake)
+    return round(min(base, l_max), 3)
+
+
+def settle_market_fixed(market_id, fixed_bets, laps):
+    """Settle the FIXED sub-book of one market: each winner is paid stake × its own locked_odds;
+    losers get nothing; a void market refunds in full. House take = pool − paid (may be NEGATIVE —
+    that is the house covering a locked payout, bounded to the cap by fixed_offer_odds at lock time).
+    No rake and no swimmer cut here: the house's edge on fixed bets is the margin already priced in."""
+    m = MARKET_BY_ID[market_id]
+    pool = sum(int(b["amount"]) for b in fixed_bets)
+    won = winning_outcome(market_id, laps)
+    rows, paid = [], 0
+    if won is None:  # void → full refund
+        for b in fixed_bets:
+            rows.append({**_row(b), "payout": int(b["amount"]), "result": "void"})
+        return {"pool": pool, "house": 0, "rows": _net(rows)}
+    for b in fixed_bets:
+        stake = int(b["amount"])
+        if b["outcome"] == won:
+            payout = int(round(stake * float(b["locked_odds"])))
+            result = "won"
+        else:
+            payout, result = 0, "lost"
+        paid += payout
+        rows.append({**_row(b), "payout": payout, "result": result})
+    return {"pool": pool, "house": pool - paid, "rows": _net(rows)}
+
+
+def _is_fixed(b):
+    return b.get("locked_odds") not in (None, "", 0)
+
+
+def _split_book(bets):
+    """Partition one market's bets into (pool_bets, fixed_bets). Fixed = carries locked_odds."""
+    pool_bets, fixed_bets = [], []
+    for b in bets:
+        (fixed_bets if _is_fixed(b) else pool_bets).append(b)
+    return pool_bets, fixed_bets
+
+
 def settle_all(bets_by_market, laps):
     """Settle every market. Returns per-market results + a per-person aggregate (the cashier's
-    payout sheet) + the house line (rakes + remainders + seed result; seed rows use key 'house')."""
+    payout sheet) + the house line. Each market may hold BOTH a parimutuel pool book (old bets, the
+    house never loses) and a fixed-odds book (new bets, house loss ≤ cap); they settle independently
+    and are merged into one market result. Seed rows use key 'house'."""
     winner = race_winner(laps)
     if not winner:
         raise ValueError("race not decided")
-    markets = [settle_market(mid, bets_by_market.get(mid, []), laps)
-               for mid in MARKET_IDS if bets_by_market.get(mid)]
+    markets = []
+    for mid in MARKET_IDS:
+        bets = bets_by_market.get(mid)
+        if not bets:
+            continue
+        pool_bets, fixed_bets = _split_book(bets)
+        res = settle_market(mid, pool_bets, laps)  # unchanged parimutuel path (house ≥ 0)
+        if fixed_bets:
+            f = settle_market_fixed(mid, fixed_bets, laps)
+            res["rows"] = res["rows"] + f["rows"]
+            res["house"] = res["house"] + f["house"]   # fixed house may be negative (bounded by cap)
+            res["pool"] = res["pool"] + f["pool"]
+            res["fixed_house"] = f["house"]
+            res["fixed_pool"] = f["pool"]
+        markets.append(res)
 
     people = {}
     house_from_seed = 0
@@ -342,13 +447,35 @@ def race_scripts(laps=()):
 
 
 def house_floor(bets_by_market, laps=()):
-    """The organiser's GUARANTEED minimum take: settle every market under every possible race
-    outcome and take the worst total. Seed changes must keep this >= 0 — that is the literal
-    'house never loses' invariant, enforced at the API."""
+    """The organiser's GUARANTEED minimum take on the PARIMUTUEL (pool) book: settle every market
+    under every possible race outcome and take the worst total, counting pool bets only. Seed
+    changes must keep this >= 0 — the literal 'house never loses' invariant for the pool book,
+    enforced at the API. Fixed-odds bets are excluded here on purpose: they carry their own,
+    separately-capped exposure (see fixed_house_floor), and folding them in would make this go
+    negative and wrongly trip the seed guards / volatility breaker that this number drives."""
     scripts = race_scripts(laps)
     if not scripts:
         return 0
-    return min(settle_all(bets_by_market, s)["house_take"] for s in scripts)
+    pool_only = {mid: [b for b in bets if not _is_fixed(b)] for mid, bets in bets_by_market.items()}
+    return min(settle_all(pool_only, s)["house_take"] for s in scripts)
+
+
+def fixed_house_floor(bets_by_market, laps=()):
+    """Worst-case house P&L on the FIXED book across every remaining race outcome. Negative = the
+    house is exposed; by construction (fixed_offer_odds) it can never be worse than −cap per
+    outcome. For the admin's live exposure view — not a guard, since fixed exposure is expected."""
+    scripts = race_scripts(laps)
+    if not scripts:
+        return 0
+    worst = None
+    for s in scripts:
+        total = 0
+        for mid, bets in bets_by_market.items():
+            _, fixed_bets = _split_book(bets)
+            if fixed_bets:
+                total += settle_market_fixed(mid, fixed_bets, s)["house"]
+        worst = total if worst is None else min(worst, total)
+    return worst or 0
 
 
 def person_floor(bets_by_market, key, laps=()):

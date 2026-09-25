@@ -248,8 +248,10 @@ def test_shivam_real_lap3_position_has_no_external_blowout_either_direction():
                         {"lap": 3, "winner": "khuseel", "time_s": None}]
     res = E.settle_market("lap3", bets, khuseel_takes_it)
     shivam_row = next(r for r in res["rows"] if r["key"] == "shivam")
-    assert shivam_row["payout"] == 2009  # ~1.0x — nowhere near the 7x cap, nothing to clip
-    assert res["house"] == 111
+    # exactly 1.0x — heavy side, thin opposing pool can't fund a full 10% rake, so winners_pot
+    # floors at 0 and he gets his stake back (never less); house keeps the thin ₹120 losing side.
+    assert shivam_row["payout"] == 2000
+    assert res["house"] == 120
 
     bansod_takes_it = [{"lap": 1, "winner": "khuseel", "time_s": None},
                        {"lap": 2, "winner": "bansod", "time_s": None},

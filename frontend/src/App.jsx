@@ -97,7 +97,7 @@ export default function App() {
 
   const main = state.markets.find((m) => m.main);
   const sides = state.markets.filter((m) => !m.main);
-  const slip = !settlement && <BetSlip picked={picked} refresh={refresh} onClear={() => setPicked(null)} />;
+  const slip = !settlement && <BetSlip picked={picked} refresh={refresh} onClear={() => setPicked(null)} fixed={state.fixed_odds} />;
   const mobileSheetOpen = !!picked && !settlement;
 
   return (

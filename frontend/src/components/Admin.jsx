@@ -102,6 +102,20 @@ export default function Admin({ state, refresh }) {
         )}
       </div>
 
+      {house && house.fixed_exposure != null && (
+        <div className={`flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 border text-sm
+          ${house.fixed_exposure < 0 ? "border-bad/40 bg-bad/10" : "border-edge bg-raise"}`}>
+          <span className="text-2xs font-bold tracking-label uppercase text-faint">
+            Fixed-odds exposure · worst case</span>
+          <span className="tabular-nums font-extrabold">
+            <span className={house.fixed_exposure < 0 ? "text-bad" : "text-khuseel"}>
+              {house.fixed_exposure < 0 ? "−" : "+"}{inr(Math.abs(house.fixed_exposure))}
+            </span>
+            <span className="text-faint font-normal"> / cap {inr(house.fixed_cap)}</span>
+          </span>
+        </div>
+      )}
+
       {suspendedMarkets.length > 0 && (
         <div className="bg-gold/10 border border-gold/40 rounded-xl p-3 space-y-2">
           <div className="flex items-center justify-between gap-2">

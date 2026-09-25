@@ -190,7 +190,7 @@ def test_person_floor_flags_constructed_covering_arbitrage():
     # and the house not only survives it, it now captures the overwhelming majority of what the
     # exploit would otherwise have paid out — the cap redirected the profit, not just blocked it:
     for s in E.race_scripts():
-        assert E.settle_all(book, s)["house_take"] >= 1600  # was 201-300 pre-cap; now 1624-5412
+        assert E.settle_all(book, s)["house_take"] >= 1400  # was 201-300 pre-cap; 1456-5442 at 10% rake
 
 
 def test_distance_yes_and_comeback_no_form_a_natural_covering_pair():

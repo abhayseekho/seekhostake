@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { tone, TONE_TEXT, TONE_SEL_STRONG } from "../lib/theme.js";
+import { oddsOf, oddsText } from "../lib/format.js";
 
 // The core surface — audit §4: numbers were already legible (kept: text-display is even larger
 // now), but a live price move was easy to miss entirely (a 900ms background tint, gone before a
@@ -13,7 +14,7 @@ export default function OddsBoard({ market, picked, onPick }) {
   useEffect(() => {
     const f = {};
     for (const o of market.outcomes) {
-      const m = o.est_mult, p = prev.current[o.id];
+      const m = oddsOf(o), p = prev.current[o.id];
       if (p != null && m != null && m !== p) f[o.id] = m > p ? "up" : "down";
       prev.current[o.id] = m;
     }
@@ -37,7 +38,7 @@ export default function OddsBoard({ market, picked, onPick }) {
         const sel = picked && picked.market === market.id && picked.outcome === o.id;
         return (
           <button key={o.id} disabled={!market.open}
-            onClick={() => onPick({ market: market.id, outcome: o.id, label: o.label, name: market.name, est: o.est_mult })}
+            onClick={() => onPick({ market: market.id, outcome: o.id, label: o.label, name: market.name, est: oddsOf(o) })}
             className={`relative rounded-2xl p-4 sm:p-5 text-left border-2 transition-all duration-quick bg-card
               ${sel ? TONE_SEL_STRONG[tone(o.id)] : "border-edge"} ${market.open ? "hover:border-dim" : "opacity-90"}
               ${flash[o.id] === "up" ? "animate-flashup" : flash[o.id] === "down" ? "animate-flashdn" : ""}
@@ -52,7 +53,7 @@ export default function OddsBoard({ market, picked, onPick }) {
             <div className={`font-extrabold uppercase tracking-wide text-sm ${TONE_TEXT[tone(o.id)]}`}>{o.label}</div>
             <div className={`text-display-sm sm:text-display font-extrabold tabular-nums mt-1
               ${flash[o.id] === "up" ? "animate-price-pulse-up" : flash[o.id] === "down" ? "animate-price-pulse-dn" : ""}`}>
-              {o.est_mult ? o.est_mult.toFixed(2) + "×" : "—"}
+              {oddsText(oddsOf(o))}
             </div>
           </button>
         );
